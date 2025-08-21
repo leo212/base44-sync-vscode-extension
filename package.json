@@ -1,0 +1,75 @@
+{
+  "name": "base44-sync",
+  "displayName": "base44-sync",
+  "description": "Sync project files between local project and base44 project",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.103.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "extension.deploy",
+        "title": "Base44: Deploy Current File"
+      },
+      {
+        "command": "extension.pull",
+        "title": "Base44: Pull Remote Changes"
+      },
+      {
+        "command": "extension.acceptChange",
+        "title": "Base44: Accept Remote Change"
+      },
+      {
+        "command": "extension.rejectChange",
+        "title": "Base44: Reject Remote Change"
+      },
+      {
+        "command": "extension.configure",
+        "title": "Base44: Configure"
+      }
+    ],
+    "configuration": {
+      "title": "Base44 Sync",
+      "properties": {
+        "base44-sync.appId": {
+          "type": "string",
+          "default": "YOUR_APPLICATION_ID_FROM_BASE44",
+          "description": "Your Base44 Application ID."
+        },
+        "base44-sync.token": {
+          "type": "string",
+          "default": "YOUR_AUTHENTICATION_TOKEN_FROM_BASE44",
+          "description": "Your Base44 Authentication Token."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "22.x",
+    "@types/vscode": "^1.103.0",
+    "@typescript-eslint/eslint-plugin": "^8.39.0",
+    "@typescript-eslint/parser": "^8.39.0",
+    "@vscode/test-cli": "^0.0.11",
+    "@vscode/test-electron": "^2.5.2",
+    "eslint": "^9.32.0",
+    "typescript": "^5.9.2"
+  },
+  "dependencies": {
+    "diff": "^8.0.2"
+  }
+}
