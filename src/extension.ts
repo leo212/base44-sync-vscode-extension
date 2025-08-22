@@ -177,7 +177,7 @@ export function markChanges(editor: vscode.TextEditor, diffs: Diff.ChangeObject<
 
       pending.push(ch);
       var decoRange = ch.range;
-      if (ch.range.end.character == 0) {
+      if (ch.range.end.character == 0 && ch.range.end.line > 0) {
         // remove the last line from the range
         decoRange = new vscode.Range(ch.range.start, new vscode.Position(ch.range.end.line - 1, editor.document.lineAt(ch.range.end.line - 1).range.end.character));
       }
@@ -203,51 +203,53 @@ export function markChanges(editor: vscode.TextEditor, diffs: Diff.ChangeObject<
 export function activate(context: vscode.ExtensionContext) {
   const workspaceFolder = vscode.workspace.workspaceFolders?.[0].uri.fsPath || "";
 
-  function isConfigured(): boolean {
-    const config = vscode.workspace.getConfiguration("base44-sync");
-    const appId = config.get<string>("appId");
-    const token = config.get<string>("token");
-    if (
-      !appId ||
-      appId === "YOUR_APPLICATION_ID_FROM_BASE44" ||
-      !token ||
-      token === "YOUR_AUTHENTICATION_TOKEN_FROM_BASE44"
-    ) {
-      return false;
-    }
-    return true;
+  interface Base44Config {
+    appId: string;
+    token: string;
   }
 
-  function showConfigurationError() {
-    vscode.window
-      .showErrorMessage(
-        "Base44 Sync is not configured. Please set your App ID and Token.",
-        "Open Settings"
-      )
-      .then((selection) => {
-        if (selection === "Open Settings") {
-          vscode.commands.executeCommand("workbench.action.openSettings", "base44-sync");
-        }
-      });
+  async function getProjectConfig(workspaceFolder: string): Promise<Base44Config | null> {
+    const configPath = path.join(workspaceFolder, "base44-config.json");
+    const configUri = vscode.Uri.file(configPath);
+  
+    try {
+      const content = await vscode.workspace.fs.readFile(configUri);
+      const config = JSON.parse(content.toString()) as Base44Config;
+      if (
+        !config.appId || config.appId === "YOUR_APPLICATION_ID_FROM_BASE44" ||
+        !config.token || config.token === "YOUR_AUTHENTICATION_TOKEN_FROM_BASE44"
+      ) {
+        vscode.window.showErrorMessage("Base44 Sync is not configured. Please set your App ID and Token in base44-config.json file.");
+        vscode.workspace.openTextDocument(configUri).then(doc => vscode.window.showTextDocument(doc));
+        return null;
+      }
+      return config;
+    } catch (error) {
+      // File does not exist or is invalid JSON, create it.
+      const defaultConfig: Base44Config = {
+        appId: "YOUR_APPLICATION_ID_FROM_BASE44",
+        token: "YOUR_AUTHENTICATION_TOKEN_FROM_BASE44"
+      };
+      await vscode.workspace.fs.writeFile(configUri, Buffer.from(JSON.stringify(defaultConfig, null, 2), "utf8"));
+      vscode.window.showInformationMessage("Created base44-config.json file. Please configure your App ID and Token.");
+      vscode.workspace.openTextDocument(configUri).then(doc => vscode.window.showTextDocument(doc));
+      return null;
+    }
   }
 
   interface PullResponse {
     pages: Record<string, string>;
     components: Record<string, string>;
     layout?: string;
+    entities?: Record<string, object>;
   }
 
   console.log("Deploy-Pull Extension Activated!");
 
-  // ---- CONFIGURE COMMAND ----
-  const configureCmd = vscode.commands.registerCommand("extension.configure", () => {
-    vscode.commands.executeCommand("workbench.action.openSettings", "base44-sync");
-  });
-
   // ---- DEPLOY COMMAND ----
   const deployCmd = vscode.commands.registerCommand("extension.deploy", async () => {
-    if (!isConfigured()) {
-      showConfigurationError();
+    const config = await getProjectConfig(workspaceFolder);
+    if (!config) {
       return;
     }
 
@@ -261,7 +263,9 @@ export function activate(context: vscode.ExtensionContext) {
     const relativePath = path.relative(path.join(workspaceFolder, "src"), filePath);
     let apiPath: string;
 
-    if (path.basename(filePath) === "Layout.js") {
+    if (relativePath.startsWith("entities" + path.sep)) {
+      apiPath = `entities/${path.basename(filePath, ".json")}`;
+    } else if (path.basename(filePath) === "Layout.js") {
       apiPath = "layout";
     } else {
       apiPath = relativePath.replace(/\.[^/.]+$/, "").replaceAll("\\", "/");
@@ -270,9 +274,7 @@ export function activate(context: vscode.ExtensionContext) {
     const content = editor.document.getText();
 
     try {
-      const config = vscode.workspace.getConfiguration("base44-sync");
-      const appId = config.get<string>("appId");
-      const token = config.get<string>("token");
+      const { appId, token } = config;
 
       const response = await fetch(
         `https://app.base44.com/api/apps/${appId}/coding/write`,
@@ -303,8 +305,8 @@ export function activate(context: vscode.ExtensionContext) {
 
   // ---- PULL COMMAND ----
   const pullCmd = vscode.commands.registerCommand("extension.pull", async () => {
-    if (!isConfigured()) {
-      showConfigurationError();
+    const config = await getProjectConfig(workspaceFolder);
+    if (!config) {
       return;
     }
 
@@ -315,7 +317,7 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     try {
-      const fileMap: Record<string, string> = await fetchRemoteFiles();
+      const fileMap: Record<string, string> = await fetchRemoteFiles(config);
       var changedFiles = 0;
 
       for (const [filePath, remoteContent] of Object.entries(fileMap)) {
@@ -491,8 +493,7 @@ export function activate(context: vscode.ExtensionContext) {
     deployCmd,
     pullCmd,
     acceptChangeCmd,
-    rejectChangeCmd,
-    configureCmd
+    rejectChangeCmd
   );
 
   // When the active editor changes, refresh decorations for it.
@@ -512,10 +513,8 @@ export function activate(context: vscode.ExtensionContext) {
   }
 
   // ---------------- SUB-FUNCTIONS ----------------
-  async function fetchRemoteFiles(): Promise<Record<string, string>> {
-    const config = vscode.workspace.getConfiguration("base44-sync");
-    const appId = config.get<string>("appId");
-    const token = config.get<string>("token");    
+  async function fetchRemoteFiles(config: Base44Config): Promise<Record<string, string>> {
+    const { appId, token } = config;
     console.log("Fetching remote files...");
     const response = await fetch(
       `https://app.base44.com/api/apps/${appId}/coding/write`,
@@ -534,7 +533,8 @@ export function activate(context: vscode.ExtensionContext) {
     console.log(
       "Remote files received:",
       Object.keys(data.pages || {}),
-      Object.keys(data.components || {})
+      Object.keys(data.components || {}),
+      Object.keys(data.entities || {})
     );
 
     const fileMap: Record<string, string> = {};
@@ -552,6 +552,14 @@ export function activate(context: vscode.ExtensionContext) {
     // Layout
     if (data.layout) {
       fileMap[path.join(workspaceFolder, "src", "Layout.js")] = data.layout;
+    }
+    // Entities
+    if (data.entities) {
+      for (const [entityName, entityJson] of Object.entries(data.entities)) {
+        fileMap[
+          path.join(workspaceFolder, "src", "entities", `${entityName}.json`)
+        ] = JSON.stringify(entityJson, null, 2);
+      }
     }
     return fileMap;
   }

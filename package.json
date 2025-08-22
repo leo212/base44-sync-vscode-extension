@@ -1,6 +1,11 @@
 {
   "name": "base44-sync",
-  "displayName": "base44-sync",
+  "displayName": "Base44 Application Code Sync for VSCode",
+  "publisher": "LiorTamam",  
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/leo212/base44-sync-vscode-extension.git"
+  },
   "description": "Sync project files between local project and base44 project",
   "version": "0.0.1",
   "engines": {
