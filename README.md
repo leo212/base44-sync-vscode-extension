@@ -11,7 +11,6 @@ This extension provides the following commands, which can be accessed from the C
 *   **`Base44: Pull Remote Changes`**: Fetches the latest files from your Base44 project. It compares them with your local files and highlights any differences (added, changed, or removed lines) directly in the editor.
 *   **`Base44: Accept Remote Change`**: Accepts a specific incoming change from a pulled file. You can trigger this from the hover tooltip over a change.
 *   **`Base44: Reject Remote Change`**: Rejects a specific incoming change, keeping your local version. You can trigger this from the hover tooltip over a change.
-*   **`Base44: Configure`**: A convenient shortcut to open the extension's settings page.
 
 ## Requirements
 
@@ -26,18 +25,16 @@ To use this extension, you need:
 This extension contributes the following settings, which are required for it to function:
 
 *   `base44-sync.appId`: Your Base44 Application ID.
-*   `base44-sync.token`: Your Base44 Authentication Token.
-
-You can configure these settings by running the `Base44: Configure` command or by navigating to `File > Preferences > Settings` and searching for "Base44 Sync".
+*   `base44-sync.token`: Your Base44 Authentication Token. The access token can be retrieved using **Dev Tools** on Chrome while performing actions on Base44 website.
 
 ## Quick Start
 
 1.  **Install** the extension.
-2.  Run the command **`Base44: Configure`** (or open settings) and provide your `appId` and `token`.
-3.  Run **`Base44: Pull Remote Changes`** to fetch your project files from Base44. The extension will create the necessary files and folders if they don't exist locally.
+2.  Run **`Base44: Pull Remote Changes`** to fetch your project files from Base44. The extension will create the necessary files and folders if they don't exist locally.
+    On the first run, a configuration file will be opened so you can enter **Project ID** and **Access Token**.
 4.  Review the highlighted changes in the editor. Hover over any change to see a diff and options to **Accept** or **Reject** it.
 5.  Edit your files locally.
-6.  When you're ready to push your changes, open the file you want to send and run **`Base44: Deploy Current File`**.
+6.  When you're ready to push your changes, open the file you want to send and run **`Base44: Deploy Current File`** from the Command Palette.
 
 ## Known Issues
 
