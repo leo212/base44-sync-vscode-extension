@@ -7,7 +7,7 @@
     "url": "https://github.com/leo212/base44-sync-vscode-extension.git"
   },
   "description": "Sync project files between local project and base44 project",
-  "version": "0.0.1",
+  "version": "0.0.3",
   "engines": {
     "vscode": "^1.103.0"
   },
@@ -25,18 +25,6 @@
       {
         "command": "extension.pull",
         "title": "Base44: Pull Remote Changes"
-      },
-      {
-        "command": "extension.acceptChange",
-        "title": "Base44: Accept Remote Change"
-      },
-      {
-        "command": "extension.rejectChange",
-        "title": "Base44: Reject Remote Change"
-      },
-      {
-        "command": "extension.configure",
-        "title": "Base44: Configure"
       }
     ],
     "configuration": {

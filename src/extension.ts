@@ -1,204 +1,5 @@
 import * as vscode from "vscode";
 import * as path from "path";
-import * as Diff from "diff";
-
-let nextChangeId = 1;
-
-export interface PendingChange {
-  id: number; // unique identifier
-  kind: ChangeKind;
-  range: vscode.Range; // sticky range
-  remoteText: string;
-}
-type ChangeKind = "added" | "removed" | "changed";
-
-
-const removedDecoType = vscode.window.createTextEditorDecorationType({
-  isWholeLine: true,
-  backgroundColor: "rgba(255,0,0,0.18)",
-  rangeBehavior: vscode.DecorationRangeBehavior.OpenOpen
-});
-
-const changedDecoType = vscode.window.createTextEditorDecorationType({
-  isWholeLine: true,
-  backgroundColor: "rgba(128,128,128,0.18)",
-  rangeBehavior: vscode.DecorationRangeBehavior.OpenOpen
-});
-
-const addedDecoType = vscode.window.createTextEditorDecorationType({
-  isWholeLine: true,
-  backgroundColor: "rgba(0,128,0,0.12)",
-  border: "1px dashed rgba(0,128,0,0.6)",
-  rangeBehavior: vscode.DecorationRangeBehavior.OpenOpen
-});
-
-// docUri -> (line -> PendingChange)
-export const pendingByDoc = new Map<string, PendingChange[]>();
-
-function makeHover(ch: PendingChange, docUri: vscode.Uri) {
-  const args = (o: any) => encodeURIComponent(JSON.stringify(o));
-  
-  // Create a code block for the remote text to preserve formatting and newlines
-  const remoteTextFormatted = '```\n' + ch.remoteText + '\n```';
-  
-  const md = new vscode.MarkdownString(
-    `**Remote:**\n` +
-    remoteTextFormatted +
-    `\n\n[✅ Accept](command:extension.acceptChange?${args({ uri: docUri.toString(), id: ch.id })})` +
-    `  |  [❌ Reject](command:extension.rejectChange?${args({ uri: docUri.toString(), id: ch.id })})`
-  );
-  md.isTrusted = true;
-  return md;
-}
-
-
-export async function refreshDecorationsFor(docUri: vscode.Uri) {
-  const editor = vscode.window.visibleTextEditors.find(e => e.document.uri.toString() === docUri.toString());
-  if (!editor) return;
-
-  const pending = pendingByDoc.get(docUri.toString()) || [];
-
-  const removedDecos: vscode.DecorationOptions[] = [];
-  const changedDecos: vscode.DecorationOptions[] = [];
-  const addedDecos: vscode.DecorationOptions[] = [];
-
-  for (const ch of pending) {
-    var decoRange = ch.range;
-    if (ch.range.end.character == 0) {
-      // remove the last line from the range
-      decoRange = new vscode.Range(ch.range.start, new vscode.Position(ch.range.end.line - 1, editor.document.lineAt(ch.range.end.line - 1).range.end.character));
-    }
-
-    const deco: vscode.DecorationOptions = { range: decoRange, hoverMessage: makeHover(ch, docUri) };
-    if (ch.kind === "removed") removedDecos.push(deco);
-    else if (ch.kind === "changed") changedDecos.push(deco);
-    else if (ch.kind === "added") addedDecos.push(deco);
-  }
-
-  editor.setDecorations(removedDecoType, removedDecos);
-  editor.setDecorations(changedDecoType, changedDecos);
-  editor.setDecorations(addedDecoType, addedDecos);
-}
-
-export function markChanges(editor: vscode.TextEditor, diffs: Diff.ChangeObject<string>[]) {
-  const docUri = editor.document.uri;
-  const pending: PendingChange[] = [];
-
-  let li = 0; // local line index
-  let nextChangeIdLocal = nextChangeId;
-
-  const removedDecos: vscode.DecorationOptions[] = [];
-  const changedDecos: vscode.DecorationOptions[] = [];
-  const addedDecos: vscode.DecorationOptions[] = [];
-
-  for (let i = 0; i < diffs.length; i++) {
-    const part = diffs[i];
-
-    // Check for a 'removed' followed immediately by an 'added' block
-    if (part.removed && diffs[i + 1]?.added) {
-      const removedText = part.value;
-      const addedText = diffs[i + 1].value;
-
-      const removedLines = removedText.split('\n');
-      const removedLinesCount = removedLines.length - (removedText.endsWith('\n') ? 1 : 0);
-
-      const startLine = li;
-      const endLine = li + removedLinesCount - 1;
-
-      // Corrected: Create a range that includes the line break of the last line
-      const range = new vscode.Range(
-        new vscode.Position(startLine, 0),
-        editor.document.lineAt(endLine).rangeIncludingLineBreak.end
-      );
-
-      const ch: PendingChange = {
-        id: nextChangeIdLocal++,
-        kind: "changed",
-        range: range,
-        remoteText: addedText,
-      };
-
-      pending.push(ch);
-      
-      var decoRange = ch.range;
-      if (ch.range.end.character == 0) {
-        // remove the last line from the range
-        decoRange = new vscode.Range(ch.range.start, new vscode.Position(ch.range.end.line - 1, editor.document.lineAt(ch.range.end.line - 1).range.end.character));
-      }
-
-      changedDecos.push({ range: decoRange, hoverMessage: makeHover(ch, docUri) });
-
-      li += removedLinesCount;
-      i++;
-      continue;
-    }
-
-    if (part.removed) {
-      const removedText = part.value;
-      const linesCount = removedText.split('\n').length - (removedText.endsWith('\n') ? 1 : 0);
-      const startLine = li;
-      const endLine = li + linesCount - 1;
-
-      // Corrected: Create a range that includes the line break of the last line
-      const range = new vscode.Range(
-        new vscode.Position(startLine, 0),
-        editor.document.lineAt(endLine).rangeIncludingLineBreak.end
-      );
-
-      const ch: PendingChange = {
-        id: nextChangeIdLocal++,
-        kind: "removed",
-        range: range,
-        remoteText: "",
-      };
-
-      pending.push(ch);
-      
-      var decoRange = ch.range;
-      if (ch.range.end.character == 0) {
-        // remove the last line from the range
-        decoRange = new vscode.Range(ch.range.start, new vscode.Position(ch.range.end.line - 1, editor.document.lineAt(ch.range.end.line - 1).range.end.character));
-      }
-      removedDecos.push({ range: decoRange, hoverMessage: makeHover(ch, docUri) });
-      li += linesCount;
-      continue;
-    }
-
-    if (part.added) {
-      const addedText = part.value;
-      const insertLine = li;
-
-      const ch: PendingChange = {
-        id: nextChangeIdLocal++,
-        kind: "added",
-        range: new vscode.Range(insertLine, 0, insertLine, 0),
-        remoteText: addedText,
-      };
-
-      pending.push(ch);
-      var decoRange = ch.range;
-      if (ch.range.end.character == 0 && ch.range.end.line > 0) {
-        // remove the last line from the range
-        decoRange = new vscode.Range(ch.range.start, new vscode.Position(ch.range.end.line - 1, editor.document.lineAt(ch.range.end.line - 1).range.end.character));
-      }
-      addedDecos.push({ range: decoRange, hoverMessage: makeHover(ch, docUri) });
-      continue;
-    }
-
-    // unchanged
-    const linesInPart = part.value.split('\n').length - (part.value.endsWith('\n') ? 1 : 0);
-    li += linesInPart;
-  }
-
-  nextChangeId = nextChangeIdLocal;
-  pendingByDoc.set(docUri.toString(), pending);
-
-  editor.setDecorations(removedDecoType, removedDecos);
-  editor.setDecorations(changedDecoType, changedDecos);
-  editor.setDecorations(addedDecoType, addedDecos);
-}
-
-
 
 export function activate(context: vscode.ExtensionContext) {
   const workspaceFolder = vscode.workspace.workspaceFolders?.[0].uri.fsPath || "";
@@ -304,213 +105,85 @@ export function activate(context: vscode.ExtensionContext) {
   });
 
   // ---- PULL COMMAND ----
-  const pullCmd = vscode.commands.registerCommand("extension.pull", async () => {
-    const config = await getProjectConfig(workspaceFolder);
-    if (!config) {
-      return;
-    }
-
-    function normalize(content: string): string {
-      return content
-        .replace(/\r\n/g, "\n")
-        .replace(/[ \t]+\n/g, "\n");
-    }
-
-    try {
-      const fileMap: Record<string, string> = await fetchRemoteFiles(config);
-      var changedFiles = 0;
-
-      for (const [filePath, remoteContent] of Object.entries(fileMap)) {
-        await ensureLocalFileExists(filePath, remoteContent);
-
-        const remoteContentNormalized = normalize(remoteContent);
-        const localContent = normalize(
-          await vscode.workspace.fs
-            .readFile(vscode.Uri.file(filePath))
-            .then(
-              (buf) => buf.toString(),
-              () => ""
-            )
-        );
-
-        const changes = Diff.diffLines(localContent, remoteContentNormalized);
-        if (changes.some((c) => c.added || c.removed)) {
-          const doc = await vscode.workspace.openTextDocument(
-            vscode.Uri.file(filePath)
-          );
-          const editor = await vscode.window.showTextDocument(doc, {
-            preview: false,
-          });
-
-          markChanges(editor, changes);
-
-          changedFiles++;
-        }
-      }
-
-      if (changedFiles > 0) {
-        vscode.window.showInformationMessage(
-          `Pull finished. ${changedFiles} files needs review.`
-        );
-      } else {
-        vscode.window.showInformationMessage("No changes found.");
-      }
-    } catch (err: any) {
-      vscode.window.showErrorMessage(`Pull error: ${err.message}`);
-      console.error("Pull error stack:", err);
-    }
-  });
-
-  // ---- ACCEPT CHANGE COMMAND ----
-  const acceptChangeCmd = vscode.commands.registerCommand(
-    "extension.acceptChange",
-    async (args: { uri: string; id: number }) => {
-      try {
-        const docUri = vscode.Uri.parse(args.uri);
-        const pending = pendingByDoc.get(docUri.toString());
-        if (!pending) return;
-
-        const idx = pending.findIndex((ch) => ch.id === args.id);
-        if (idx === -1) return;
-
-        const ch = pending[idx];
-        const doc = await vscode.workspace.openTextDocument(docUri);
-        const editor = await vscode.window.showTextDocument(doc, {
-          preview: false,
-        });
-
-        let lineDelta = 0;
-        if (ch.kind === "removed") {
-          const removedLinesCount = ch.range.end.line - ch.range.start.line + 1;
-          lineDelta = -removedLinesCount;
-        } else if (ch.kind === "changed") {
-          const removedLinesCount = ch.range.end.line - ch.range.start.line;
-          const addedLinesCount = ch.remoteText.split("\n").length - 1;
-          lineDelta = addedLinesCount - removedLinesCount;
-        } else if (ch.kind === "added") {
-          const addedLinesCount = ch.remoteText.split("\n").length - 1;
-          lineDelta = addedLinesCount;
-        }
-
-        await editor.edit((editBuilder) => {
-          if (ch.kind === "removed") {
-            editBuilder.delete(ch.range);
-          } else if (ch.kind === "changed") {
-            editBuilder.replace(ch.range, ch.remoteText);
-          } else if (ch.kind === "added") {
-            editBuilder.insert(ch.range.start, ch.remoteText);
-          }
-        });
-
-        for (let i = idx + 1; i < pending.length; i++) {
-          const other = pending[i];
-          const newStart = other.range.start.line + lineDelta;
-          const newEnd = other.range.end.line + lineDelta;
-
-          other.range = new vscode.Range(
-            newStart,
-            other.range.start.character,
-            newEnd,
-            other.range.end.character
-          );
-        }
-
-        pending.splice(idx, 1);
-        if (pending.length === 0) pendingByDoc.delete(docUri.toString());
-        else pendingByDoc.set(docUri.toString(), pending);
-
-        const removed = pending.filter((c) => c.kind === "removed");
-        const changed = pending.filter((c) => c.kind === "changed");
-        const added = pending.filter((c) => c.kind === "added");
-
-        editor.setDecorations(
-          removedDecoType,
-          removed.map((c) => ({ range: c.range, hoverMessage: makeHover(c, docUri) }))
-        );
-        editor.setDecorations(
-          changedDecoType,
-          changed.map((c) => ({ range: c.range, hoverMessage: makeHover(c, docUri) }))
-        );
-        editor.setDecorations(
-          addedDecoType,
-          added.map((c) => ({ range: c.range, hoverMessage: makeHover(c, docUri) }))
-        );
-
-        if (pending.length === 0) {
-          vscode.window.showInformationMessage(
-            "All changes accepted for this file."
-          );
-        }
-      } catch (err: any) {
-        console.error("acceptChange error:", err);
-      }
-    }
-  );
-
-  const rejectChangeCmd = vscode.commands.registerCommand(
-    "extension.rejectChange",
-    async (args: { uri: string; id: number }) => {
-      try {
-        const docUri = vscode.Uri.parse(args.uri);
-        const pending = pendingByDoc.get(docUri.toString());
-        if (!pending) return;
-
-        const idx = pending.findIndex((ch) => ch.id === args.id);
-        if (idx === -1) return;
-
-        pending.splice(idx, 1);
-        if (pending.length === 0) pendingByDoc.delete(docUri.toString());
-        else pendingByDoc.set(docUri.toString(), pending);
-
-        const editor = vscode.window.visibleTextEditors.find(
-          (e) => e.document.uri.toString() === docUri.toString()
-        );
-        if (!editor) return;
-
-        const removed = pending.filter((c) => c.kind === "removed");
-        const changed = pending.filter((c) => c.kind === "changed");
-        const added = pending.filter((c) => c.kind === "added");
-
-        editor.setDecorations(
-          removedDecoType,
-          removed.map((c) => ({ range: c.range, hoverMessage: makeHover(c, docUri) }))
-        );
-        editor.setDecorations(
-          changedDecoType,
-          changed.map((c) => ({ range: c.range, hoverMessage: makeHover(c, docUri) }))
-        );
-        editor.setDecorations(
-          addedDecoType,
-          added.map((c) => ({ range: c.range, hoverMessage: makeHover(c, docUri) }))
-        );
-      } catch (err: any) {
-        console.error("rejectChange error:", err);
-      }
-    }
-  );
-
-  context.subscriptions.push(
-    deployCmd,
-    pullCmd,
-    acceptChangeCmd,
-    rejectChangeCmd
-  );
-
-  // When the active editor changes, refresh decorations for it.
-  vscode.window.onDidChangeActiveTextEditor(
-    (editor) => {
-      if (editor) {
-        refreshDecorationsFor(editor.document.uri);
-      }
-    },
-    null,
-    context.subscriptions
-  );
-
-  // Also refresh for the currently active editor when the extension activates
-  if (vscode.window.activeTextEditor) {
-    refreshDecorationsFor(vscode.window.activeTextEditor.document.uri);
+const pullCmd = vscode.commands.registerCommand("extension.pull", async () => {
+  const config = await getProjectConfig(workspaceFolder);
+  if (!config) {
+    return;
   }
+
+  function normalize(content: string): string {
+    return content
+      .replace(/\r\n/g, "\n")
+      .replace(/[ \t]+\n/g, "\n");
+  }
+
+  try {
+    const fileMap: Record<string, string> = await fetchRemoteFiles(config);
+    let changedFiles = 0;
+
+    for (const [filePath, remoteContent] of Object.entries(fileMap)) {
+      await ensureLocalFileExists(filePath, remoteContent);
+
+      const remoteContentNormalized = normalize(remoteContent);
+      const localContent = normalize(
+        await vscode.workspace.fs
+          .readFile(vscode.Uri.file(filePath))
+          .then(
+            (buf) => buf.toString(),
+            () => ""
+          )
+      );
+
+      if (remoteContentNormalized !== localContent) {
+        changedFiles++;
+
+        // Step 1: keep local content in memory
+        const oldUri = vscode.Uri.parse(`memfs:${filePath}.old`);
+        const provider = new (class implements vscode.TextDocumentContentProvider {
+          onDidChange?: vscode.Event<vscode.Uri> | undefined;
+          provideTextDocumentContent(uri: vscode.Uri): string {
+            return localContent;
+          }
+        })();
+
+        context.subscriptions.push(
+          vscode.workspace.registerTextDocumentContentProvider("memfs", provider)
+        );
+
+        // Step 2: replace local file with remote content
+        const edit = new vscode.WorkspaceEdit();
+        const fullRange = new vscode.Range(
+          new vscode.Position(0, 0),
+          (await vscode.workspace.openTextDocument(filePath)).lineAt(
+            (await vscode.workspace.openTextDocument(filePath)).lineCount - 1
+          ).range.end
+        );
+        edit.replace(vscode.Uri.file(filePath), fullRange, remoteContent);
+        await vscode.workspace.applyEdit(edit);
+
+        // Step 3: open diff
+        await vscode.commands.executeCommand(
+          "vscode.diff",
+          oldUri,
+          vscode.Uri.file(filePath),
+          `Before ⟷ After: ${path.basename(filePath)}`
+        );
+      }
+    }
+
+    if (changedFiles > 0) {
+      vscode.window.showInformationMessage(
+        `Pull finished. ${changedFiles} files changed.`
+      );
+    } else {
+      vscode.window.showInformationMessage("No changes found.");
+    }
+  } catch (err: any) {
+    vscode.window.showErrorMessage(`Pull error: ${err.message}`);
+    console.error("Pull error stack:", err);
+  }
+});
+
 
   // ---------------- SUB-FUNCTIONS ----------------
   async function fetchRemoteFiles(config: Base44Config): Promise<Record<string, string>> {
