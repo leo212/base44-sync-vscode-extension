@@ -7,7 +7,7 @@
     "url": "https://github.com/leo212/base44-sync-vscode-extension.git"
   },
   "description": "Sync project files between local project and base44 project",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "engines": {
     "vscode": "^1.103.0"
   },

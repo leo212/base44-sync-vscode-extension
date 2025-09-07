@@ -252,6 +252,8 @@ const pullCmd = vscode.commands.registerCommand("extension.pull", async () => {
         Buffer.from(content, "utf8")
       );
       vscode.window.showInformationMessage(`New file created: ${filePath}`);
+      const document = await vscode.workspace.openTextDocument(filePath);
+      await vscode.window.showTextDocument(document, { preview: false });
     }
   }
 }
