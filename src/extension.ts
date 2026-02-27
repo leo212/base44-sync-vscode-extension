@@ -47,6 +47,42 @@ export function activate(context: vscode.ExtensionContext) {
 
   console.log("Deploy-Pull Extension Activated!");
 
+  async function deployFile(config: Base44Config, document: vscode.TextDocument) {
+    const filePath = document.uri.fsPath;
+    const relativePath = path.relative(path.join(workspaceFolder, "src"), filePath);
+    let apiPath: string;
+
+    if (relativePath.startsWith("entities" + path.sep)) {
+      apiPath = `entities/${path.basename(filePath, ".json")}`;
+    } else if (path.basename(filePath) === "Layout.js") {
+      apiPath = "layout";
+    } else {
+      apiPath = relativePath.replace(/\.[^/.]+$/, "").replaceAll("\\", "/");
+    }
+
+    const content = document.getText();
+    const { appId, token } = config;
+
+    const response = await fetch(
+      `https://app.base44.com/api/apps/${appId}/coding/write`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          file_path: apiPath,
+          content: content,
+        }),
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(`Deploy failed for ${relativePath}: ${response.statusText}`);
+    }
+  }
+
   // ---- DEPLOY COMMAND ----
   const deployCmd = vscode.commands.registerCommand("extension.deploy", async () => {
     const config = await getProjectConfig(workspaceFolder);
@@ -60,47 +96,44 @@ export function activate(context: vscode.ExtensionContext) {
       return;
     }
 
-    const filePath = editor.document.uri.fsPath;
-    const relativePath = path.relative(path.join(workspaceFolder, "src"), filePath);
-    let apiPath: string;
-
-    if (relativePath.startsWith("entities" + path.sep)) {
-      apiPath = `entities/${path.basename(filePath, ".json")}`;
-    } else if (path.basename(filePath) === "Layout.js") {
-      apiPath = "layout";
-    } else {
-      apiPath = relativePath.replace(/\.[^/.]+$/, "").replaceAll("\\", "/");
-    }
-
-    const content = editor.document.getText();
-
     try {
-      const { appId, token } = config;
-
-      const response = await fetch(
-        `https://app.base44.com/api/apps/${appId}/coding/write`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({
-            file_path: apiPath,
-            content: content,
-          }),
-        }
-      );
-
-      if (response.ok) {
-        vscode.window.showInformationMessage(
-          `Deployed ${relativePath} successfully.`
-        );
-      } else {
-        vscode.window.showErrorMessage(`Deploy failed: ${response.statusText}`);
-      }
+      await deployFile(config, editor.document);
+      const relativePath = path.relative(path.join(workspaceFolder, "src"), editor.document.uri.fsPath);
+      vscode.window.showInformationMessage(`Deployed ${relativePath} successfully.`);
     } catch (err: any) {
       vscode.window.showErrorMessage(`Deploy error: ${err.message}`);
+    }
+  });
+
+  // ---- DEPLOY ALL OPENED EDITORS COMMAND ----
+  const deployAllCmd = vscode.commands.registerCommand("extension.deployAll", async () => {
+    const config = await getProjectConfig(workspaceFolder);
+    if (!config) {
+      return;
+    }
+
+    const openedDocuments = vscode.workspace.textDocuments.filter(doc => !doc.isUntitled);
+    if (openedDocuments.length === 0) {
+      vscode.window.showErrorMessage("No files open.");
+      return;
+    }
+
+    let successCount = 0;
+    let errorCount = 0;
+
+    for (const document of openedDocuments) {
+      try {
+        await deployFile(config, document);
+        successCount++;
+      } catch (err) {
+        errorCount++;
+      }
+    }
+
+    if (errorCount === 0) {
+      vscode.window.showInformationMessage(`Deployed ${successCount} files successfully.`);
+    } else {
+      vscode.window.showWarningMessage(`Deployed ${successCount} files successfully, ${errorCount} failed.`);
     }
   });
 
@@ -185,55 +218,43 @@ const pullCmd = vscode.commands.registerCommand("extension.pull", async () => {
 });
 
 
+  context.subscriptions.push(deployCmd, deployAllCmd, pullCmd);
+
   // ---------------- SUB-FUNCTIONS ----------------
   async function fetchRemoteFiles(config: Base44Config): Promise<Record<string, string>> {
     const { appId, token } = config;
-    console.log("Fetching remote files...");
-    const response = await fetch(
-      `https://app.base44.com/api/apps/${appId}/coding/write`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ file_path: "", content: "" }),
-      }
-    );
+    console.log("Fetching remote files from sandbox endpoint...");
+
+    const url = `https://app.base44.com/api/apps/${appId}/sandbox/files`;
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+    });
 
     if (!response.ok) throw new Error(`Pull failed: ${response.statusText}`);
-    const data = (await response.json()) as PullResponse;
-    console.log(
-      "Remote files received:",
-      Object.keys(data.pages || {}),
-      Object.keys(data.components || {}),
-      Object.keys(data.entities || {})
-    );
+    const data = (await response.json()) as { app_id?: string; files?: Record<string, string> };
 
     const fileMap: Record<string, string> = {};
-    // Pages
-    for (const [pageName, code] of Object.entries(data.pages || {})) {
-      fileMap[path.join(workspaceFolder, "src", "pages", `${pageName}.jsx`)] =
-        code;
-    }
-    // Components
-    for (const [compName, code] of Object.entries(data.components || {})) {
-      fileMap[
-        path.join(workspaceFolder, "src", "components", `${compName}.jsx`)
-      ] = code;
-    }
-    // Layout
-    if (data.layout) {
-      fileMap[path.join(workspaceFolder, "src", "Layout.js")] = data.layout;
-    }
-    // Entities
-    if (data.entities) {
-      for (const [entityName, entityJson] of Object.entries(data.entities)) {
-        fileMap[
-          path.join(workspaceFolder, "src", "entities", `${entityName}.json`)
-        ] = JSON.stringify(entityJson, null, 2);
+
+    for (const [remotePath, content] of Object.entries(data.files || {})) {
+      // Remove any leading slashes
+      const rel = remotePath.replace(/^[/\\]+/, "");
+      // Resolve target path within workspace
+      const target = path.resolve(workspaceFolder, rel);
+      const workspaceRootResolved = path.resolve(workspaceFolder);
+
+      // Prevent writing outside workspace
+      if (!target.startsWith(workspaceRootResolved)) {
+        console.warn(`Skipping path outside workspace: ${remotePath}`);
+        continue;
       }
+
+      fileMap[target] = content;
     }
+
     return fileMap;
   }
 
@@ -254,7 +275,7 @@ const pullCmd = vscode.commands.registerCommand("extension.pull", async () => {
       vscode.window.showInformationMessage(`New file created: ${filePath}`);
       const document = await vscode.workspace.openTextDocument(filePath);
       await vscode.window.showTextDocument(document, { preview: false });
-    }
+    } 
   }
 }
 
