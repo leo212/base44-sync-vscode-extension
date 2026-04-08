@@ -1,13 +1,13 @@
 {
   "name": "base44-sync",
   "displayName": "Base44 Application Code Sync for VSCode",
-  "publisher": "LiorTamam",  
+  "publisher": "LiorTamam",
   "repository": {
     "type": "git",
     "url": "https://github.com/leo212/base44-sync-vscode-extension.git"
   },
   "description": "Sync project files between local project and base44 project",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "engines": {
     "vscode": "^1.103.0"
   },
@@ -29,6 +29,10 @@
       {
         "command": "extension.pull",
         "title": "Base44: Pull Remote Changes"
+      },
+      {
+        "command": "extension.login",
+        "title": "Base44: Login"
       }
     ],
     "configuration": {
@@ -67,6 +71,7 @@
     "typescript": "^5.9.2"
   },
   "dependencies": {
-    "diff": "^8.0.2"
+    "diff": "^8.0.2",
+    "puppeteer-core": "^24.40.0"
   }
 }

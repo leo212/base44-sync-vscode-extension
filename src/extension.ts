@@ -1,5 +1,8 @@
 import * as vscode from "vscode";
 import * as path from "path";
+import puppeteer from "puppeteer-core";
+import * as os from "os";
+import * as fs from "fs";
 
 export function activate(context: vscode.ExtensionContext) {
   const workspaceFolder = vscode.workspace.workspaceFolders?.[0].uri.fsPath || "";
@@ -9,32 +12,84 @@ export function activate(context: vscode.ExtensionContext) {
     token: string;
   }
 
-  async function getProjectConfig(workspaceFolder: string): Promise<Base44Config | null> {
-    const configPath = path.join(workspaceFolder, "base44-config.json");
-    const configUri = vscode.Uri.file(configPath);
-  
+  async function runLogin(): Promise<Base44Config | null> {
+    vscode.window.showInformationMessage("Opening Base44 login window...");
+
+    const chromePaths = [
+      "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+      "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+      process.env.LOCALAPPDATA + "\\Google\\Chrome\\Application\\chrome.exe",
+    ];
+    const executablePath = chromePaths.find(p => fs.existsSync(p));
+    if (!executablePath) {
+      vscode.window.showErrorMessage("Google Chrome not found. Please install Chrome and try again.");
+      return null;
+    }
+
+    const userDataDir = path.join(os.tmpdir(), "base44-chrome-profile");
+    const browser = await puppeteer.launch({
+      headless: false,
+      executablePath,
+      userDataDir,
+      defaultViewport: null,
+      args: ["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+      ignoreDefaultArgs: ["--enable-automation"],
+    });
+    const page = await browser.newPage();
+    await page.evaluateOnNewDocument(() => {
+      Object.defineProperty(navigator, "webdriver", { get: () => undefined });
+    });
+    await page.goto("https://app.base44.com", { waitUntil: "networkidle2" });
+
+    let token: string | null = null;
+    await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: "Waiting for Base44 login...", cancellable: false },
+      async () => {
+        while (!token) {
+          await new Promise(r => setTimeout(r, 1500));
+          try { token = await page.evaluate(() => localStorage.getItem("token")); } catch { }
+        }
+      }
+    );
+    await browser.close();
+
+    if (!token) {
+      vscode.window.showErrorMessage("Login failed: could not retrieve token.");
+      return null;
+    }
+
+    const appsResponse = await fetch(
+      "https://app.base44.com/api/apps?q=%7B%22app_type%22%3A%22user_app%22%7D&sort=-updated_date&limit=50&fields=id,name,slug,status,updated_date",
+      { headers: { Authorization: `Bearer ${token}`, accept: "application/json" } }
+    );
+    if (!appsResponse.ok) {
+      vscode.window.showErrorMessage(`Failed to fetch apps: ${appsResponse.statusText}`);
+      return null;
+    }
+
+    const apps = (await appsResponse.json()) as Array<{ id: string; name: string; slug: string }>;
+    const picked = await vscode.window.showQuickPick(
+      apps.map(a => ({ label: a.name, description: a.slug, id: a.id })),
+      { placeHolder: "Select a Base44 app" }
+    );
+    if (!picked) { return null; }
+
+    const config: Base44Config = { appId: picked.id, token };
+    const configUri = vscode.Uri.file(path.join(workspaceFolder, "base44-config.json"));
+    await vscode.workspace.fs.writeFile(configUri, Buffer.from(JSON.stringify(config, null, 2), "utf8"));
+    vscode.window.showInformationMessage(`Logged in! App "${picked.label}" selected and config saved.`);
+    return config;
+  }
+
+  async function getProjectConfig(): Promise<Base44Config | null> {
+    const configUri = vscode.Uri.file(path.join(workspaceFolder, "base44-config.json"));
     try {
       const content = await vscode.workspace.fs.readFile(configUri);
       const config = JSON.parse(content.toString()) as Base44Config;
-      if (
-        !config.appId || config.appId === "YOUR_APPLICATION_ID_FROM_BASE44" ||
-        !config.token || config.token === "YOUR_AUTHENTICATION_TOKEN_FROM_BASE44"
-      ) {
-        vscode.window.showErrorMessage("Base44 Sync is not configured. Please set your App ID and Token in base44-config.json file.");
-        vscode.workspace.openTextDocument(configUri).then(doc => vscode.window.showTextDocument(doc));
-        return null;
-      }
+      if (!config.appId || !config.token) { return runLogin(); }
       return config;
-    } catch (error) {
-      // File does not exist or is invalid JSON, create it.
-      const defaultConfig: Base44Config = {
-        appId: "YOUR_APPLICATION_ID_FROM_BASE44",
-        token: "YOUR_AUTHENTICATION_TOKEN_FROM_BASE44"
-      };
-      await vscode.workspace.fs.writeFile(configUri, Buffer.from(JSON.stringify(defaultConfig, null, 2), "utf8"));
-      vscode.window.showInformationMessage("Created base44-config.json file. Please configure your App ID and Token.");
-      vscode.workspace.openTextDocument(configUri).then(doc => vscode.window.showTextDocument(doc));
-      return null;
+    } catch {
+      return runLogin();
     }
   }
 
@@ -78,17 +133,14 @@ export function activate(context: vscode.ExtensionContext) {
       }
     );
 
-    if (!response.ok) {
-      throw new Error(`Deploy failed for ${relativePath}: ${response.statusText}`);
-    }
+    if (response.status === 401) { throw new Error(`401 Unauthorized`); }
+    if (!response.ok) { throw new Error(`Deploy failed for ${relativePath}: ${response.statusText}`); }
   }
 
   // ---- DEPLOY COMMAND ----
   const deployCmd = vscode.commands.registerCommand("extension.deploy", async () => {
-    const config = await getProjectConfig(workspaceFolder);
-    if (!config) {
-      return;
-    }
+    let config = await getProjectConfig();
+    if (!config) { return; }
 
     const editor = vscode.window.activeTextEditor;
     if (!editor) {
@@ -101,16 +153,19 @@ export function activate(context: vscode.ExtensionContext) {
       const relativePath = path.relative(path.join(workspaceFolder, "src"), editor.document.uri.fsPath);
       vscode.window.showInformationMessage(`Deployed ${relativePath} successfully.`);
     } catch (err: any) {
-      vscode.window.showErrorMessage(`Deploy error: ${err.message}`);
+      if (err.message?.includes("401") || err.message?.includes("Unauthorized")) {
+        config = await runLogin();
+        if (config) { await deployFile(config, editor.document); }
+      } else {
+        vscode.window.showErrorMessage(`Deploy error: ${err.message}`);
+      }
     }
   });
 
   // ---- DEPLOY ALL OPENED EDITORS COMMAND ----
   const deployAllCmd = vscode.commands.registerCommand("extension.deployAll", async () => {
-    const config = await getProjectConfig(workspaceFolder);
-    if (!config) {
-      return;
-    }
+    let config = await getProjectConfig();
+    if (!config) { return; }
 
     const openedDocuments = vscode.workspace.textDocuments.filter(doc => !doc.isUntitled);
     if (openedDocuments.length === 0) {
@@ -125,7 +180,10 @@ export function activate(context: vscode.ExtensionContext) {
       try {
         await deployFile(config, document);
         successCount++;
-      } catch (err) {
+      } catch (err: any) {
+        if (err.message?.includes("401") || err.message?.includes("Unauthorized")) {
+          config = await runLogin() ?? config;
+        }
         errorCount++;
       }
     }
@@ -139,10 +197,8 @@ export function activate(context: vscode.ExtensionContext) {
 
   // ---- PULL COMMAND ----
 const pullCmd = vscode.commands.registerCommand("extension.pull", async () => {
-  const config = await getProjectConfig(workspaceFolder);
-  if (!config) {
-    return;
-  }
+  let config = await getProjectConfig();
+  if (!config) { return; }
 
   function normalize(content: string): string {
     return content
@@ -151,7 +207,16 @@ const pullCmd = vscode.commands.registerCommand("extension.pull", async () => {
   }
 
   try {
-    const fileMap: Record<string, string> = await fetchRemoteFiles(config);
+    let fileMap: Record<string, string>;
+    try {
+      fileMap = await fetchRemoteFiles(config);
+    } catch (err: any) {
+      if (err.message?.includes("401") || err.message?.includes("Unauthorized")) {
+        config = await runLogin();
+        if (!config) { return; }
+        fileMap = await fetchRemoteFiles(config);
+      } else { throw err; }
+    }
     let changedFiles = 0;
 
     for (const [filePath, remoteContent] of Object.entries(fileMap)) {
@@ -218,7 +283,12 @@ const pullCmd = vscode.commands.registerCommand("extension.pull", async () => {
 });
 
 
-  context.subscriptions.push(deployCmd, deployAllCmd, pullCmd);
+  // ---- LOGIN COMMAND ----
+  const loginCmd = vscode.commands.registerCommand("extension.login", async () => {
+    await runLogin();
+  });
+
+  context.subscriptions.push(deployCmd, deployAllCmd, pullCmd, loginCmd);
 
   // ---------------- SUB-FUNCTIONS ----------------
   async function fetchRemoteFiles(config: Base44Config): Promise<Record<string, string>> {
@@ -234,6 +304,7 @@ const pullCmd = vscode.commands.registerCommand("extension.pull", async () => {
       },
     });
 
+    if (response.status === 401) { throw new Error(`401 Unauthorized`); }
     if (!response.ok) throw new Error(`Pull failed: ${response.statusText}`);
     const data = (await response.json()) as { app_id?: string; files?: Record<string, string> };
 
