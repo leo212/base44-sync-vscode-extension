@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); color: var(--vscode-foreground); background: var(--vscode-sideBar-background); padding: 8px; }
+    button { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; padding: 5px 10px; cursor: pointer; border-radius: 2px; width: 100%; margin-bottom: 6px; font-size: 12px; }
+    button:hover { background: var(--vscode-button-hoverBackground); }
+    button:disabled { opacity: 0.5; cursor: default; }
+    select { background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); border: 1px solid var(--vscode-dropdown-border); padding: 4px; width: 100%; margin-bottom: 6px; font-size: 12px; }
+    .section { margin-bottom: 10px; }
+    .label { font-size: 11px; color: var(--vscode-descriptionForeground); margin-bottom: 3px; }
+    .status-box { background: var(--vscode-editor-background); border: 1px solid var(--vscode-panel-border); border-radius: 3px; padding: 6px 8px; font-size: 11px; margin-bottom: 6px; }
+    .status-box.success { border-left: 3px solid #4caf50; }
+    .status-box.error { border-left: 3px solid #f44336; }
+    .status-box.progress { border-left: 3px solid var(--vscode-progressBar-background, #0078d4); }
+    .status-box.idle { border-left: 3px solid var(--vscode-panel-border); }
+    .last-action { font-size: 10px; color: var(--vscode-descriptionForeground); margin-top: 3px; }
+    progress { width: 100%; height: 4px; margin-top: 4px; accent-color: var(--vscode-progressBar-background, #0078d4); }
+    .file-list { list-style: none; }
+    .file-item { background: var(--vscode-editor-background); border: 1px solid var(--vscode-panel-border); border-radius: 2px; margin-bottom: 4px; padding: 4px 6px; font-size: 11px; }
+    .file-name { cursor: pointer; color: var(--vscode-textLink-foreground); word-break: break-all; }
+    .file-name:hover { text-decoration: underline; }
+    .file-actions { display: flex; gap: 4px; margin-top: 4px; }
+    .file-actions button { margin: 0; padding: 2px 6px; font-size: 10px; width: auto; }
+    .btn-push { background: var(--vscode-button-background); }
+    .btn-pull { background: var(--vscode-button-secondaryBackground, #3a3d41); color: var(--vscode-button-secondaryForeground, #ccc); }
+    .btn-ignore { background: var(--vscode-button-secondaryBackground, #3a3d41); color: var(--vscode-button-secondaryForeground, #ccc); }
+    .file-op-status { font-size: 10px; margin-top: 3px; color: var(--vscode-descriptionForeground); }
+    .file-op-status.err { color: #f44336; }
+    hr { border: none; border-top: 1px solid var(--vscode-panel-border); margin: 8px 0; }
+    .empty { color: var(--vscode-descriptionForeground); font-size: 11px; font-style: italic; }
+    .hidden { display: none; }
+    .loading-spinner { text-align: center; padding: 20px; }
+    .bootstrap-msg { text-align: center; color: var(--vscode-descriptionForeground); font-size: 11px; padding: 10px; }
+  </style>
+</head>
+<body>
+  <!-- Bootstrap/Loading State -->
+  <div id="bootstrapContainer" class="section">
+    <div class="loading-spinner">
+      <div class="bootstrap-msg">Starting Base44 Sync...</div>
+    </div>
+  </div>
+
+  <!-- Invalid Token State -->
+  <div id="invalidTokenContainer" class="hidden section">
+    <div class="status-box error">
+      <div>Token expired or invalid</div>
+    </div>
+    <button id="btnRefreshToken">🔄 Refresh Token</button>
+  </div>
+
+  <!-- Ready State -->
+  <div id="readyContainer" class="hidden">
+    <div class="section">
+      <button id="btnLogin">🔑 Login</button>
+    </div>
+
+    <div class="section">
+      <div class="label">Project</div>
+      <select id="appSelect"><option value="">— select project —</option></select>
+    </div>
+
+    <hr>
+
+    <div class="section">
+      <button id="btnPushFile">📤 Push Current File</button>
+      <button id="btnPushAll">📤 Push All Opened Editors</button>
+      <button id="btnPull">📥 Pull Remote Changes</button>
+    </div>
+
+    <hr>
+
+    <div class="section">
+      <div class="label">Status</div>
+      <div class="status-box idle" id="statusBox">
+        <span id="statusText">Idle</span>
+        <div class="last-action" id="lastAction"></div>
+        <progress id="progressBar" style="display:none" value="0" max="100"></progress>
+      </div>
+    </div>
+
+    <hr>
+
+    <div class="section">
+      <div class="label">Changed Files <span id="changedCount"></span></div>
+      <div id="syncStatusContainer" class="empty">
+        <div style="margin-bottom: 8px;">Sync status unknown</div>
+        <button id="btnCheckSync" style="font-size: 11px;">🔍 Check Sync Status</button>
+      </div>
+      <ul class="file-list" id="fileList"><li class="empty">No changes detected</li></ul>
+    </div>
+  </div>
+
+  <script>
+    const vscode = acquireVsCodeApi();
+
+    document.getElementById('btnRefreshToken').onclick = () => vscode.postMessage({ type: 'login' });
+    document.getElementById('btnLogin').onclick = () => vscode.postMessage({ type: 'login' });
+    document.getElementById('btnPushFile').onclick = () => vscode.postMessage({ type: 'pushFile' });
+    document.getElementById('btnPushAll').onclick = () => vscode.postMessage({ type: 'pushAll' });
+    document.getElementById('btnPull').onclick = () => vscode.postMessage({ type: 'pull' });
+    document.getElementById('btnCheckSync').onclick = () => vscode.postMessage({ type: 'checkSync' });
+
+    document.getElementById('appSelect').onchange = (e) => {
+      const sel = e.target;
+      const opt = sel.options[sel.selectedIndex];
+      if (opt.value) vscode.postMessage({ type: 'selectApp', appId: opt.value, appName: opt.text });
+    };
+
+    const fileItemBusy = {};
+
+    window.addEventListener('message', ({ data }) => {
+      if (data.type === 'state') applyState(data.state);
+      if (data.type === 'fileOpDone') {
+        if (data.error) {
+          fileItemBusy[data.localPath] = { op: 'error', error: data.error };
+        } else {
+          delete fileItemBusy[data.localPath];
+        }
+        renderFileList(window._files || []);
+      }
+    });
+
+    function applyState(s) {
+      // Handle bootstrap states
+      const bootstrapContainer = document.getElementById('bootstrapContainer');
+      const invalidTokenContainer = document.getElementById('invalidTokenContainer');
+      const readyContainer = document.getElementById('readyContainer');
+
+      if (s.bootstrapState === 'loading') {
+        bootstrapContainer.classList.remove('hidden');
+        invalidTokenContainer.classList.add('hidden');
+        readyContainer.classList.add('hidden');
+        return;
+      } else if (s.bootstrapState === 'invalid-token') {
+        bootstrapContainer.classList.add('hidden');
+        invalidTokenContainer.classList.remove('hidden');
+        readyContainer.classList.add('hidden');
+        return;
+      } else if (s.bootstrapState === 'ready') {
+        bootstrapContainer.classList.add('hidden');
+        invalidTokenContainer.classList.add('hidden');
+        readyContainer.classList.remove('hidden');
+      }
+
+      // Login button
+      document.getElementById('btnLogin').textContent = s.loggedIn ? '🔄 Refresh Token' : '🔑 Login';
+
+      // Apps dropdown
+      const sel = document.getElementById('appSelect');
+      if (s.apps && s.apps.length) {
+        sel.innerHTML = s.apps.map(a =>
+          `<option value="${a.id}" ${a.id === s.selectedAppId ? 'selected' : ''}>${a.name}</option>`
+        ).join('');
+      }
+
+      // Status
+      const box = document.getElementById('statusBox');
+      box.className = 'status-box ' + s.statusType;
+      document.getElementById('statusText').textContent = s.status;
+      document.getElementById('lastAction').textContent = s.lastAction || '';
+
+      const bar = document.getElementById('progressBar');
+      if (s.statusType === 'progress') {
+        bar.style.display = 'block';
+        if (s.progress >= 0) { bar.removeAttribute('value'); bar.value = s.progress; bar.max = 100; }
+        else { bar.removeAttribute('value'); } // indeterminate
+      } else {
+        bar.style.display = 'none';
+      }
+
+      // Changed files and sync status
+      const files = s.changedFiles || [];
+      Object.keys(fileItemBusy).forEach(lp => {
+        if (!files.find(f => f.localPath === lp)) { delete fileItemBusy[lp]; }
+      });
+      window._files = files;
+      window._syncKnown = s.syncKnown;
+      document.getElementById('changedCount').textContent = files.length ? `(${files.length})` : '';
+      renderFileList(files, s.syncKnown);
+    }
+
+    function renderFileList(files, syncKnown) {
+      const list = document.getElementById('fileList');
+      const syncContainer = document.getElementById('syncStatusContainer');
+
+      if (!syncKnown) {
+        // Show unknown sync state
+        syncContainer.style.display = 'block';
+        list.style.display = 'none';
+        list.innerHTML = '';
+        return;
+      }
+
+      // Sync is known
+      syncContainer.style.display = 'none';
+      list.style.display = 'block';
+
+      if (!files.length) {
+        list.innerHTML = '<li class="empty">No changes detected</li>';
+        return;
+      }
+      list.innerHTML = files.map((f, i) => {
+        const busy = fileItemBusy[f.localPath];
+        const isWorking = busy && busy.op !== 'error';
+        const pushLabel = busy && busy.op === 'pushing' ? '⏳ Pushing...' : '📤 Push';
+        const pullLabel = busy && busy.op === 'pulling' ? '⏳ Pulling...' : '📥 Revert';
+        const errHtml = busy && busy.op === 'error' ? `<div class="file-op-status err">✗ ${busy.error}</div>` : '';
+        return `<li class="file-item">
+          <div class="file-name" onclick="diff(${i})">${f.relativePath}</div>
+          <div class="file-actions">
+            <button class="btn-push" onclick="pushFile(${i})" ${isWorking ? 'disabled' : ''}>
+              ${pushLabel}
+            </button>
+            <button class="btn-pull" onclick="pullFile(${i})" ${isWorking ? 'disabled' : ''}>
+              ${pullLabel}
+            </button>
+            <button class="btn-ignore" onclick="ignoreFile(${i})" ${isWorking ? 'disabled' : ''}>
+              🚫 Ignore
+            </button>
+          </div>${errHtml}</li>`;
+      }).join('');
+    }
+
+    function diff(i) {
+      const f = window._files[i];
+      vscode.postMessage({ type: 'diffFile', localPath: f.localPath, remoteContent: f.remoteContent, relativePath: f.relativePath });
+    }
+    function pushFile(i) {
+      const f = window._files[i];
+      if (fileItemBusy[f.localPath]) { return; }
+      fileItemBusy[f.localPath] = { op: 'pushing' };
+      renderFileList(window._files, window._syncKnown);
+      vscode.postMessage({ type: 'pushChangedFile', localPath: f.localPath });
+    }
+    function pullFile(i) {
+      const f = window._files[i];
+      if (fileItemBusy[f.localPath]) { return; }
+      fileItemBusy[f.localPath] = { op: 'pulling' };
+      renderFileList(window._files, window._syncKnown);
+      vscode.postMessage({ type: 'pullChangedFile', localPath: f.localPath, remoteContent: f.remoteContent });
+    }
+    function ignoreFile(i) {
+      const f = window._files[i];
+      vscode.postMessage({ type: 'addToIgnore', relativePath: f.relativePath });
+    }
+
+    vscode.postMessage({ type: 'ready' });
+  </script>
+</body>
+</html>

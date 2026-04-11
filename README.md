@@ -1,37 +1,71 @@
 # Base44 Sync
 
-Sync project files between your local VS Code project and a Base44 project. This extension allows you to pull remote changes, review them, and deploy your local files back to Base44.
-This extension is independent and not endorsed by or associated with Base44 or Wix.
+Sync project files between your local VS Code project and a Base44 project. Pull remote changes, review diffs, and push your local files back to Base44 — all from a dedicated side panel.
+
+> This extension is independent and not endorsed by or associated with Base44 or Wix.
+
+## Side Panel
+
+![Base44 Sync side panel](src/screenshots/sidepanel.png)
+
+The Base44 icon in the Activity Bar opens the side panel, which gives you full control without ever touching the Command Palette.
 
 ## Features
 
-This extension provides the following commands, which can be accessed from the Command Palette (`Ctrl+Shift+P`):
+### Authentication
+- **Login** — opens a Chrome window to authenticate with your Base44 account. After login the app list is fetched and the selected project is saved to `base44-config.json`.
+- **Refresh Token** — shown instead of Login once `base44-config.json` exists. Re-authenticates and updates the token in place.
+- If `base44-config.json` is already present when VS Code starts, the extension loads it automatically — no login required.
 
-*   **`Base44: Login`**: Opens a Chrome browser window to log in to your Base44 account. After login, you'll be prompted to select an app from your account. The extension saves the token and app ID to `base44-config.json` automatically. Login is also triggered automatically when config is missing or the token has expired.
-*   **`Base44: Deploy Current File`**: Deploys the content of the currently active editor to your Base44 project.
-*   **`Base44: Deploy All Opened Editors`**: Deploys all currently open files to your Base44 project.
-*   **`Base44: Pull Remote Changes`**: Fetches the latest files from your Base44 project. It compares them with your local files and opens a diff view for any changed files.
+### Project Selection
+- A dropdown lists all your Base44 apps. Switching the selection updates `base44-config.json` immediately.
+
+### Push & Pull
+- **Push Current File** — deploys the active editor to Base44.
+- **Push All Opened Editors** — deploys every open file, with a per-file progress bar.
+- **Pull Remote Changes** — fetches all remote files, writes new/changed ones to disk, and updates the changed-files list.
+
+### Check Sync Status
+- **Check Sync Status** — fetches remote files and compares them with local files without writing anything to disk. Updates the changed-files list so you can see what's out of sync before deciding to pull.
+
+### Status Bar
+Shows the current operation with a progress bar (determinate where possible), and the timestamp + result of the last completed action.
+
+### Changed Files List
+- Lists every file that differs between local and remote.
+- Click a filename to open a **Local ⟷ Remote diff** view.
+- Per-file **Push** and **Pull** buttons let you sync individual files.
+- The list is **persisted across VS Code restarts** via extension global state.
 
 ## Requirements
 
-1.  An active account on [Base44](https://app.base44.com/).
-2.  Google Chrome installed (used for the login flow).
+1. An active account on [Base44](https://app.base44.com/).
+2. Google Chrome installed (used for the login flow).
 
 ## Quick Start
 
-1.  **Install** the extension.
-2.  Run **`Base44: Login`** from the Command Palette. A Chrome window will open — log in to your Base44 account, then select the app you want to work with. The extension will save your credentials to `base44-config.json` automatically.
-3.  Run **`Base44: Pull Remote Changes`** to fetch your project files.
-4.  Edit your files locally.
-5.  Run **`Base44: Deploy Current File`** or **`Base44: Deploy All Opened Editors`** to push changes back to Base44.
+1. **Install** the extension.
+2. Click the **Base44 icon** in the Activity Bar to open the side panel.
+3. Click **Login** — a Chrome window opens. Sign in to Base44, then the extension saves your credentials automatically.
+4. Select your project from the **Project** dropdown.
+5. Click **Pull Remote Changes** to fetch your project files.
+6. Edit files locally.
+7. Click **Push Current File** or **Push All Opened Editors** to deploy changes back to Base44.
 
-> **Note:** If your token expires, any deploy or pull operation will automatically re-open the login window so you can re-authenticate without losing your work.
+> **Tip:** Use **Check Sync Status** at any time to see which files are out of sync without modifying anything locally.
 
-## Known Issues
-
-No known issues at this time.
+> **Note:** If your token expires, any push or pull will show an error status. Click **Refresh Token** to re-authenticate.
 
 ## Release Notes
+
+### 0.0.7
+
+- New **side panel** UI in the Activity Bar with full push/pull/sync controls.
+- **Check Sync Status** button — compares remote vs local without writing files.
+- **Changed files list** with per-file diff, push, and pull — persisted across restarts.
+- Status box with progress bar and last-action timestamp.
+- Config loaded automatically on startup — no login prompt if `base44-config.json` exists.
+- Path traversal fix in remote file resolution.
 
 ### 0.0.5
 

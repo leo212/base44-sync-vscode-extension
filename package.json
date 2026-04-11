@@ -7,7 +7,7 @@
     "url": "https://github.com/leo212/base44-sync-vscode-extension.git"
   },
   "description": "Sync project files between local project and base44 project",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "engines": {
     "vscode": "^1.103.0"
   },
@@ -17,6 +17,24 @@
   "activationEvents": [],
   "main": "./out/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "base44Container",
+          "title": "Base44",
+          "icon": "$(cloud-upload)"
+        }
+      ]
+    },
+    "views": {
+      "base44Container": [
+        {
+          "type": "webview",
+          "id": "base44Sidebar",
+          "name": "Base44 Sync"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "extension.deploy",
@@ -33,6 +51,10 @@
       {
         "command": "extension.login",
         "title": "Base44: Login"
+      },
+      {
+        "command": "extension.checkSync",
+        "title": "Base44: Check Sync Status"
       }
     ],
     "configuration": {
