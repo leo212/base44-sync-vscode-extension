@@ -67,9 +67,10 @@
     <hr>
 
     <div class="section">
-      <button id="btnPushFile">📤 Push Current File</button>
-      <button id="btnPushAll">📤 Push All Opened Editors</button>
-      <button id="btnPull">📥 Pull Remote Changes</button>
+      <button id="btnPushFile"><span class="codicon codicon-cloud-upload"></span> Push Current File</button>
+      <button id="btnPushAll"><span class="codicon codicon-cloud-upload"></span> Push All Opened Editors</button>
+      <button id="btnPull"><span class="codicon codicon-cloud-download"></span> Pull Remote Changes</button>
+      <button id="btnSyncStatus"><span class="codicon codicon-sync"></span> Sync Status</button>
     </div>
 
     <hr>
@@ -82,17 +83,6 @@
         <progress id="progressBar" style="display:none" value="0" max="100"></progress>
       </div>
     </div>
-
-    <hr>
-
-    <div class="section">
-      <div class="label">Changed Files <span id="changedCount"></span></div>
-      <div id="syncStatusContainer" class="empty">
-        <div style="margin-bottom: 8px;">Sync status unknown</div>
-        <button id="btnCheckSync" style="font-size: 11px;">🔍 Check Sync Status</button>
-      </div>
-      <ul class="file-list" id="fileList"><li class="empty">No changes detected</li></ul>
-    </div>
   </div>
 
   <script>
@@ -103,7 +93,7 @@
     document.getElementById('btnPushFile').onclick = () => vscode.postMessage({ type: 'pushFile' });
     document.getElementById('btnPushAll').onclick = () => vscode.postMessage({ type: 'pushAll' });
     document.getElementById('btnPull').onclick = () => vscode.postMessage({ type: 'pull' });
-    document.getElementById('btnCheckSync').onclick = () => vscode.postMessage({ type: 'checkSync' });
+    document.getElementById('btnSyncStatus').onclick = () => vscode.postMessage({ type: 'syncStatus' });
 
     document.getElementById('appSelect').onchange = (e) => {
       const sel = e.target;
@@ -115,14 +105,6 @@
 
     window.addEventListener('message', ({ data }) => {
       if (data.type === 'state') applyState(data.state);
-      if (data.type === 'fileOpDone') {
-        if (data.error) {
-          fileItemBusy[data.localPath] = { op: 'error', error: data.error };
-        } else {
-          delete fileItemBusy[data.localPath];
-        }
-        renderFileList(window._files || []);
-      }
     });
 
     function applyState(s) {
@@ -173,80 +155,8 @@
         bar.style.display = 'none';
       }
 
-      // Changed files and sync status
-      const files = s.changedFiles || [];
-      Object.keys(fileItemBusy).forEach(lp => {
-        if (!files.find(f => f.localPath === lp)) { delete fileItemBusy[lp]; }
-      });
-      window._files = files;
+      // keep sync state available for future extension UI without rendering inline file rows
       window._syncKnown = s.syncKnown;
-      document.getElementById('changedCount').textContent = files.length ? `(${files.length})` : '';
-      renderFileList(files, s.syncKnown);
-    }
-
-    function renderFileList(files, syncKnown) {
-      const list = document.getElementById('fileList');
-      const syncContainer = document.getElementById('syncStatusContainer');
-
-      if (!syncKnown) {
-        // Show unknown sync state
-        syncContainer.style.display = 'block';
-        list.style.display = 'none';
-        list.innerHTML = '';
-        return;
-      }
-
-      // Sync is known
-      syncContainer.style.display = 'none';
-      list.style.display = 'block';
-
-      if (!files.length) {
-        list.innerHTML = '<li class="empty">No changes detected</li>';
-        return;
-      }
-      list.innerHTML = files.map((f, i) => {
-        const busy = fileItemBusy[f.localPath];
-        const isWorking = busy && busy.op !== 'error';
-        const pushLabel = busy && busy.op === 'pushing' ? '⏳ Pushing...' : '📤 Push';
-        const pullLabel = busy && busy.op === 'pulling' ? '⏳ Pulling...' : '📥 Revert';
-        const errHtml = busy && busy.op === 'error' ? `<div class="file-op-status err">✗ ${busy.error}</div>` : '';
-        return `<li class="file-item">
-          <div class="file-name" onclick="diff(${i})">${f.relativePath}</div>
-          <div class="file-actions">
-            <button class="btn-push" onclick="pushFile(${i})" ${isWorking ? 'disabled' : ''}>
-              ${pushLabel}
-            </button>
-            <button class="btn-pull" onclick="pullFile(${i})" ${isWorking ? 'disabled' : ''}>
-              ${pullLabel}
-            </button>
-            <button class="btn-ignore" onclick="ignoreFile(${i})" ${isWorking ? 'disabled' : ''}>
-              🚫 Ignore
-            </button>
-          </div>${errHtml}</li>`;
-      }).join('');
-    }
-
-    function diff(i) {
-      const f = window._files[i];
-      vscode.postMessage({ type: 'diffFile', localPath: f.localPath, remoteContent: f.remoteContent, relativePath: f.relativePath });
-    }
-    function pushFile(i) {
-      const f = window._files[i];
-      if (fileItemBusy[f.localPath]) { return; }
-      fileItemBusy[f.localPath] = { op: 'pushing' };
-      renderFileList(window._files, window._syncKnown);
-      vscode.postMessage({ type: 'pushChangedFile', localPath: f.localPath });
-    }
-    function pullFile(i) {
-      const f = window._files[i];
-      if (fileItemBusy[f.localPath]) { return; }
-      fileItemBusy[f.localPath] = { op: 'pulling' };
-      renderFileList(window._files, window._syncKnown);
-      vscode.postMessage({ type: 'pullChangedFile', localPath: f.localPath, remoteContent: f.remoteContent });
-    }
-    function ignoreFile(i) {
-      const f = window._files[i];
-      vscode.postMessage({ type: 'addToIgnore', relativePath: f.relativePath });
     }
 
     vscode.postMessage({ type: 'ready' });

@@ -7,7 +7,7 @@
     "url": "https://github.com/leo212/base44-sync-vscode-extension.git"
   },
   "description": "Sync project files between local project and base44 project",
-  "version": "0.0.8",
+  "version": "0.0.9",
   "engines": {
     "vscode": "^1.103.0"
   },
@@ -32,6 +32,11 @@
           "type": "webview",
           "id": "base44Sidebar",
           "name": "Base44 Sync"
+        },
+        {
+          "id": "base44ChangedFiles",
+          "name": "Changed Files",
+          "type": "tree"
         }
       ]
     },
@@ -55,8 +60,74 @@
       {
         "command": "extension.checkSync",
         "title": "Base44: Check Sync Status"
+      },
+      {
+        "command": "extension.syncStatus",
+        "title": "Sync Status",
+        "icon": "$(sync)"
+      },
+      {
+        "command": "extension.openChangedFileDiff",
+        "title": "Open Diff",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "extension.pushChangedFileFromTree",
+        "title": "Push File",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "extension.revertChangedFileFromTree",
+        "title": "Revert",
+        "icon": "$(history)"
+      },
+      {
+        "command": "extension.ignoreChangedFileFromTree",
+        "title": "Ignore File",
+        "icon": "$(eye-closed)"
+      },
+      {
+        "command": "extension.pushAllChangedFiles",
+        "title": "Push All Changes",
+        "icon": "$(cloud-upload)"
       }
     ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "extension.syncStatus",
+          "when": "view == base44ChangedFiles",
+          "group": "navigation"
+        },
+        {
+          "command": "extension.pushAllChangedFiles",
+          "when": "view == base44ChangedFiles",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "extension.openChangedFileDiff",
+          "when": "view == base44ChangedFiles && viewItem == base44ChangedFile",
+          "group": "inline"
+        },
+        {
+          "command": "extension.pushChangedFileFromTree",
+          "when": "view == base44ChangedFiles && viewItem == base44ChangedFile",
+          "group": "inline"
+        },
+        {
+          "command": "extension.revertChangedFileFromTree",
+          "when": "view == base44ChangedFiles && viewItem == base44ChangedFile",
+          "group": "inline"
+        },
+        {
+          "command": "extension.ignoreChangedFileFromTree",
+          "when": "view == base44ChangedFiles && viewItem == base44ChangedFile",
+          "group": "inline"
+        }
+      ]
+    },
     "configuration": {
       "title": "Base44 Sync",
       "properties": {

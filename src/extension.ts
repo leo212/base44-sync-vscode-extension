@@ -20,6 +20,8 @@ interface ChangedFile {
   localPath: string;
   relativePath: string;
   remoteContent: string;
+  status: "modified" | "added" | "deleted";
+  isPushing?: boolean;
 }
 
 interface PanelState {
@@ -40,7 +42,52 @@ interface PanelState {
   changedFiles: ChangedFile[];
 }
 
+class ChangedFilesProvider implements vscode.TreeDataProvider<ChangedFile> {
+  private readonly _onDidChangeTreeData = new vscode.EventEmitter<ChangedFile | undefined | null>();
+  readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
+
+  refresh(): void {
+    this._onDidChangeTreeData.fire(null);
+  }
+
+  getChildren(element?: ChangedFile): ChangedFile[] {
+    if (!element) {
+      return panelState.changedFiles;
+    }
+    return [];
+  }
+
+  getTreeItem(element: ChangedFile): vscode.TreeItem {
+    const item = new vscode.TreeItem(
+      element.relativePath,
+      vscode.TreeItemCollapsibleState.None
+    );
+
+    const shortStatus = element.status === "added" ? "A" : element.status === "deleted" ? "D" : "M";
+    item.description = element.isPushing ? "uploading..." : shortStatus;
+    item.contextValue = element.isPushing ? "base44ChangedFilePushing" : "base44ChangedFile";
+
+    if (!element.isPushing && element.status === "modified") {
+      item.tooltip = `Local: ${element.localPath}\nRemote version differs from your workspace file.`;
+      item.command = {
+        command: "extension.openChangedFileDiff",
+        title: "Open Diff",
+        arguments: [element],
+      };
+    } else if (!element.isPushing && element.status === "added") {
+      item.tooltip = `Local file added: ${element.localPath}\nThis file is not present on the remote server.`;
+    } else if (!element.isPushing && element.status === "deleted") {
+      item.tooltip = `Remote file missing locally: ${element.localPath}\nThis file exists on the server but not in your workspace.`;
+    } else {
+      item.tooltip = `Uploading ${element.relativePath} to Base44...`;
+    }
+
+    return item;
+  }
+}
+
 let panel: vscode.WebviewView | undefined;
+let changedFilesProvider: ChangedFilesProvider | undefined;
 let panelState: PanelState = {
   bootstrapState: "loading",
   loggedIn: false,
@@ -97,6 +144,7 @@ function markTokenInvalid() {
   panelState.changedFiles = [];
   panelState.status = "Token expired or invalid";
   panelState.statusType = "error";
+  changedFilesProvider?.refresh();
   postState();
 }
 
@@ -120,6 +168,7 @@ function markSyncUnknown() {
   panelState.changedFiles = [];
   remoteFileSnapshot = {};
   stopMonitoring();
+  changedFilesProvider?.refresh();
   postState();
 }
 
@@ -132,6 +181,7 @@ function stopMonitoring() {
 
 export function activate(context: vscode.ExtensionContext) {
   const workspaceFolder = vscode.workspace.workspaceFolders?.[0].uri.fsPath || "";
+  changedFilesProvider = new ChangedFilesProvider();
 
   // Do NOT restore persisted changed files; always start with sync unknown state
 
@@ -142,6 +192,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   function persistChangedFiles() {
     context.globalState.update("base44.changedFiles", panelState.changedFiles);
+    changedFilesProvider?.refresh();
   }
 
   function normalize(content: string): string {
@@ -307,19 +358,45 @@ export function activate(context: vscode.ExtensionContext) {
         return false;
       }
 
+      const workspaceFiles = await vscode.workspace.findFiles("**/*", "**/{.git,node_modules,.vscode}/**", 20000);
+      const localFiles = new Set<string>();
+      for (const uri of workspaceFiles) {
+        const filePath = uri.fsPath;
+        const relativePath = path.relative(workspaceFolder, filePath);
+        if (!relativePath || relativePath.startsWith("..")) continue;
+        localFiles.add(filePath);
+      }
+
       const total = Object.keys(fileMap).length;
       let done = 0;
       const newChangedFiles: ChangedFile[] = [];
+      const seenRemotePaths = new Set<string>();
 
       for (const [filePath, remoteContent] of Object.entries(fileMap)) {
         done++;
+        seenRemotePaths.add(filePath);
         setStatus(`Comparing files... (${done}/${total})`, "progress", Math.round((done / total) * 100));
+
+        const relativePath = path.relative(workspaceFolder, filePath);
+        const localExists = localFiles.has(filePath);
+        if (!localExists) {
+          newChangedFiles.push({ localPath: filePath, relativePath, remoteContent, status: "deleted" });
+          continue;
+        }
+
         const localContent = normalize(
           await vscode.workspace.fs.readFile(vscode.Uri.file(filePath)).then(b => b.toString(), () => "")
         );
         if (normalize(remoteContent) !== localContent) {
-          newChangedFiles.push({ localPath: filePath, relativePath: path.relative(workspaceFolder, filePath), remoteContent });
+          newChangedFiles.push({ localPath: filePath, relativePath, remoteContent, status: "modified" });
         }
+      }
+
+      for (const filePath of localFiles) {
+        if (seenRemotePaths.has(filePath)) continue;
+        const relativePath = path.relative(workspaceFolder, filePath);
+        if (!relativePath || relativePath.startsWith("..")) continue;
+        newChangedFiles.push({ localPath: filePath, relativePath, remoteContent: "", status: "added" });
       }
 
       // Store the remote snapshot for monitoring
@@ -373,6 +450,7 @@ export function activate(context: vscode.ExtensionContext) {
                 localPath: filePath,
                 relativePath: relativePath,
                 remoteContent: remoteFileSnapshot[filePath],
+                status: "modified",
               });
               persistChangedFiles();
               postState();
@@ -420,7 +498,8 @@ export function activate(context: vscode.ExtensionContext) {
             await vscode.commands.executeCommand("extension.pull");
             break;
           case "checkSync":
-            await vscode.commands.executeCommand("extension.checkSync");
+          case "syncStatus":
+            await vscode.commands.executeCommand("extension.syncStatus");
             break;
           case "diffFile":
             await showDiff(msg.localPath, msg.remoteContent, msg.relativePath);
@@ -429,7 +508,8 @@ export function activate(context: vscode.ExtensionContext) {
             await pushChangedFile(msg.localPath);
             break;
           case "pullChangedFile":
-            await pullChangedFile(msg.localPath, msg.remoteContent);
+          case "revertChangedFile":
+            await revertChangedFile(msg.localPath, msg.remoteContent);
             break;
           case "addToIgnore":
             await addToBase44Ignore(msg.relativePath);
@@ -445,10 +525,16 @@ export function activate(context: vscode.ExtensionContext) {
     },
   };
 
+  const changedFilesTree = vscode.window.createTreeView("base44ChangedFiles", {
+    treeDataProvider: changedFilesProvider,
+    showCollapseAll: false,
+  });
+
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider("base44Sidebar", provider, {
       webviewOptions: { retainContextWhenHidden: true },
-    })
+    }),
+    changedFilesTree
   );
 
   // ---- HELPERS ----
@@ -644,6 +730,13 @@ export function activate(context: vscode.ExtensionContext) {
       panel?.webview.postMessage({ type: "fileOpDone", localPath, error: "Not logged in" });
       return;
     }
+
+    const changedFile = panelState.changedFiles.find(f => f.localPath === localPath);
+    if (changedFile) {
+      changedFile.isPushing = true;
+      changedFilesProvider?.refresh();
+    }
+
     try {
       const doc = await vscode.workspace.openTextDocument(localPath);
       await deployFile(config, doc);
@@ -652,25 +745,104 @@ export function activate(context: vscode.ExtensionContext) {
     } catch (err: any) {
       panel?.webview.postMessage({ type: "fileOpDone", localPath, error: err.message });
       setIdle(`Push failed: ${err.message}`, "error");
+    } finally {
+      const file = panelState.changedFiles.find(f => f.localPath === localPath);
+      if (file) { file.isPushing = false; }
+      changedFilesProvider?.refresh();
+      postState();
     }
   }
 
-  async function pullChangedFile(localPath: string, remoteContent: string) {
+  async function revertChangedFile(localPath: string, remoteContent: string) {
+    const file = panelState.changedFiles.find(f => f.localPath === localPath);
+    if (!file) { return; }
+
+    const choice = await vscode.window.showWarningMessage(
+      `Revert ${file.relativePath} to the server version?`,
+      { modal: true },
+      "Revert",
+      "Cancel"
+    );
+    if (choice !== "Revert") { return; }
+
     try {
       await ensureLocalFileExists(localPath, remoteContent);
       await vscode.workspace.fs.writeFile(vscode.Uri.file(localPath), Buffer.from(remoteContent, "utf8"));
       panelState.changedFiles = panelState.changedFiles.filter(f => f.localPath !== localPath);
       remoteFileSnapshot[localPath] = remoteContent;
       persistChangedFiles();
-      setIdle(`Pulled ${path.basename(localPath)}`, "success");
+      setIdle(`Reverted ${path.basename(localPath)}`, "success");
       postState();
     } catch (err: any) {
       panel?.webview.postMessage({ type: "fileOpDone", localPath, error: err.message });
-      setIdle(`Pull failed: ${err.message}`, "error");
+      setIdle(`Revert failed: ${err.message}`, "error");
     }
   }
 
   // ---- COMMANDS ----
+  const openChangedFileDiffCmd = vscode.commands.registerCommand("extension.openChangedFileDiff", async (file: ChangedFile) => {
+    if (!file) { return; }
+    await showDiff(file.localPath, file.remoteContent, file.relativePath);
+  });
+
+  const pushChangedFileFromTreeCmd = vscode.commands.registerCommand("extension.pushChangedFileFromTree", async (file: ChangedFile) => {
+    if (!file) { return; }
+    await pushChangedFile(file.localPath);
+    changedFilesProvider?.refresh();
+  });
+
+  const revertChangedFileFromTreeCmd = vscode.commands.registerCommand("extension.revertChangedFileFromTree", async (file: ChangedFile) => {
+    if (!file) { return; }
+    await revertChangedFile(file.localPath, file.remoteContent);
+    changedFilesProvider?.refresh();
+  });
+
+  const ignoreChangedFileFromTreeCmd = vscode.commands.registerCommand("extension.ignoreChangedFileFromTree", async (file: ChangedFile) => {
+    if (!file) { return; }
+    await addToBase44Ignore(file.relativePath);
+    changedFilesProvider?.refresh();
+  });
+
+  const syncStatusCmd = vscode.commands.registerCommand("extension.syncStatus", async () => {
+    const config = await getProjectConfig();
+    if (!config) { return; }
+    await runSyncBaseline(config.token);
+    changedFilesProvider?.refresh();
+  });
+
+  const pushAllChangesCmd = vscode.commands.registerCommand("extension.pushAllChangedFiles", async () => {
+    if (!panelState.changedFiles.length) { return; }
+
+    const config = await getProjectConfig();
+    if (!config) { return; }
+
+    for (const file of panelState.changedFiles) {
+      if (file.status === "deleted") {
+        continue;
+      }
+
+      const existing = panelState.changedFiles.find(f => f.localPath === file.localPath);
+      if (!existing) { continue; }
+      existing.isPushing = true;
+      changedFilesProvider?.refresh();
+
+      try {
+        const doc = await vscode.workspace.openTextDocument(file.localPath);
+        await deployFile(config, doc);
+      } catch (err: any) {
+        existing.isPushing = false;
+        changedFilesProvider?.refresh();
+        setIdle(`Push failed: ${err.message}`, "error");
+        return;
+      } finally {
+        existing.isPushing = false;
+        changedFilesProvider?.refresh();
+      }
+    }
+
+    setIdle(`Pushed ${panelState.changedFiles.filter(f => f.status !== "deleted").length} changed files`, "success");
+  });
+
   const loginCmd = vscode.commands.registerCommand("extension.login", async () => {
     await runLogin();
   });
@@ -766,7 +938,7 @@ export function activate(context: vscode.ExtensionContext) {
         );
 
         if (normalize(remoteContent) !== localContent) {
-          newChangedFiles.push({ localPath: filePath, relativePath, remoteContent });
+          newChangedFiles.push({ localPath: filePath, relativePath, remoteContent, status: "modified" });
         }
       }
 
@@ -787,7 +959,19 @@ export function activate(context: vscode.ExtensionContext) {
     }
   });
 
-  context.subscriptions.push(loginCmd, deployCmd, deployAllCmd, pullCmd, checkSyncCmd);
+  context.subscriptions.push(
+    openChangedFileDiffCmd,
+    pushChangedFileFromTreeCmd,
+    revertChangedFileFromTreeCmd,
+    ignoreChangedFileFromTreeCmd,
+    syncStatusCmd,
+    pushAllChangesCmd,
+    loginCmd,
+    deployCmd,
+    deployAllCmd,
+    pullCmd,
+    checkSyncCmd
+  );
 }
 
 export function deactivate() {}
