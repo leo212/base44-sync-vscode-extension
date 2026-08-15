@@ -573,6 +573,8 @@ export function activate(context: vscode.ExtensionContext) {
       apiPath = `entities/${path.basename(filePath, ".json")}`;
     } else if (path.basename(filePath) === "Layout.js") {
       apiPath = "layout";
+    } else if (path.basename(filePath).endsWith(".js")) {
+      apiPath = "src/" + relativePath.replaceAll("\\", "/");
     } else {
       apiPath = relativePath.replace(/\.[^/.]+$/, "").replaceAll("\\", "/");
     }
