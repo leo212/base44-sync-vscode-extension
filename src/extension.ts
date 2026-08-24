@@ -65,19 +65,41 @@ class ChangedFilesProvider implements vscode.TreeDataProvider<ChangedFile> {
 
     const shortStatus = element.status === "added" ? "A" : element.status === "deleted" ? "D" : "M";
     item.description = element.isPushing ? "uploading..." : shortStatus;
-    item.contextValue = element.isPushing ? "base44ChangedFilePushing" : "base44ChangedFile";
+    item.contextValue = element.isPushing 
+      ? "base44ChangedFilePushing" 
+      : element.status === "deleted" 
+        ? "base44DeletedFile" 
+        : element.status === "added"
+          ? "base44AddedFile"
+          : "base44ChangedFile";
 
-    if (!element.isPushing && element.status === "modified") {
+    // Strikeout for deleted files using combining strikethrough characters (or Unicode strikethrough)
+    if (element.status === "deleted") {
+      const strikedLabel = element.relativePath.split("").map(c => c + "\u0336").join("");
+      item.label = strikedLabel;
+      item.iconPath = new vscode.ThemeIcon("file", new vscode.ThemeColor("charts.red"));
+      item.tooltip = `Remote file missing locally (Deleted): ${element.localPath}\nClick to view remote content. Revert to create locally.`;
+      item.command = {
+        command: "extension.openChangedFileDiff",
+        title: "View Content",
+        arguments: [element],
+      };
+    } else if (element.status === "added") {
+      item.iconPath = new vscode.ThemeIcon("file-added", new vscode.ThemeColor("charts.green"));
+      item.tooltip = `Local file added: ${element.localPath}\nThis file is not present on the remote server.`;
+      item.command = {
+        command: "extension.openAddedFile",
+        title: "Open File",
+        arguments: [element],
+      };
+    } else if (!element.isPushing && element.status === "modified") {
+      item.iconPath = new vscode.ThemeIcon("file-code");
       item.tooltip = `Local: ${element.localPath}\nRemote version differs from your workspace file.`;
       item.command = {
         command: "extension.openChangedFileDiff",
         title: "Open Diff",
         arguments: [element],
       };
-    } else if (!element.isPushing && element.status === "added") {
-      item.tooltip = `Local file added: ${element.localPath}\nThis file is not present on the remote server.`;
-    } else if (!element.isPushing && element.status === "deleted") {
-      item.tooltip = `Remote file missing locally: ${element.localPath}\nThis file exists on the server but not in your workspace.`;
     } else {
       item.tooltip = `Uploading ${element.relativePath} to Base44...`;
     }
@@ -216,23 +238,61 @@ export function activate(context: vscode.ExtensionContext) {
   }
 
   function matchesPattern(relativePath: string, pattern: string): boolean {
-    // Normalize paths for comparison
     const normalizedPath = relativePath.replace(/\\/g, "/");
-    const normalizedPattern = pattern.replace(/\\/g, "/");
+    let normalizedPattern = pattern.replace(/\\/g, "/");
 
-    // Exact match
-    if (normalizedPath === normalizedPattern) return true;
+    const isDirectoryPattern = normalizedPattern.endsWith("/");
+    if (isDirectoryPattern) {
+      normalizedPattern = normalizedPattern.slice(0, -1);
+    }
 
-    // Wildcard patterns
+    // Split paths into segments
+    const pathSegments = normalizedPath.split("/");
+    const patternSegments = normalizedPattern.split("/");
+
+    if (isDirectoryPattern) {
+      // If pattern ends with /, e.g., "backend/", it matches if normalizedPath starts with pattern segments
+      if (pathSegments.length >= patternSegments.length) {
+        let matches = true;
+        for (let i = 0; i < patternSegments.length; i++) {
+          if (pathSegments[i] !== patternSegments[i]) {
+            matches = false;
+            break;
+          }
+        }
+        if (matches) return true;
+      }
+    } else {
+      // If pattern does not end with /, e.g., "backend", every file under backend folder and subfolders AND every file starting with backend is ignored
+      // 1. Exact match or folder prefix match
+      if (pathSegments.length >= patternSegments.length) {
+        let matches = true;
+        for (let i = 0; i < patternSegments.length; i++) {
+          if (pathSegments[i] !== patternSegments[i]) {
+            matches = false;
+            break;
+          }
+        }
+        if (matches) return true;
+      }
+
+      // 2. File or path starting with pattern (e.g. filename starting with backend or path segment starting with backend)
+      const fileName = pathSegments[pathSegments.length - 1];
+      if (fileName.startsWith(normalizedPattern) || normalizedPath.startsWith(normalizedPattern)) {
+        return true;
+      }
+    }
+
+    // Glob pattern fallback if contains *
     if (normalizedPattern.includes("*")) {
-      // Convert glob pattern to regex
       const regexPattern = normalizedPattern
         .replace(/\./g, "\\.")
         .replace(/\*\*/g, "<<DOUBLESTAR>>")
         .replace(/\*/g, "[^/]*")
         .replace(/<<DOUBLESTAR>>/g, ".*");
-      const regex = new RegExp(`^${regexPattern}$`);
-      return regex.test(normalizedPath);
+      const regex = new RegExp(`^${regexPattern}(/|$)`);
+      const strictRegex = new RegExp(`^${regexPattern}$`);
+      return strictRegex.test(normalizedPath) || regex.test(normalizedPath) || normalizedPath.includes(normalizedPattern);
     }
 
     return false;
@@ -246,6 +306,49 @@ export function activate(context: vscode.ExtensionContext) {
     return files.filter(f => !shouldIgnoreFile(f.relativePath, patterns));
   }
 
+  async function refreshChangedFilesFromSnapshot(message = "Changes updated"): Promise<void> {
+    if (!panelState.syncKnown) {
+      return;
+    }
+
+    const workspaceFiles = await vscode.workspace.findFiles("**/*", "**/{.git,node_modules,.vscode}/**", 20000);
+    const localFiles = new Set<string>();
+    for (const uri of workspaceFiles) {
+      const filePath = uri.fsPath;
+      const relativePath = path.relative(workspaceFolder, filePath);
+      if (!relativePath || relativePath.startsWith("..")) continue;
+      localFiles.add(filePath);
+    }
+
+    const changedFiles: ChangedFile[] = [];
+    const seenRemotePaths = new Set<string>();
+    for (const [filePath, remoteContent] of Object.entries(remoteFileSnapshot)) {
+      seenRemotePaths.add(filePath);
+      const relativePath = path.relative(workspaceFolder, filePath);
+      if (!localFiles.has(filePath)) {
+        changedFiles.push({ localPath: filePath, relativePath, remoteContent, status: "deleted" });
+        continue;
+      }
+
+      const localContent = normalize(
+        await vscode.workspace.fs.readFile(vscode.Uri.file(filePath)).then(b => b.toString(), () => "")
+      );
+      if (normalize(remoteContent) !== localContent) {
+        changedFiles.push({ localPath: filePath, relativePath, remoteContent, status: "modified" });
+      }
+    }
+
+    for (const filePath of localFiles) {
+      if (seenRemotePaths.has(filePath)) continue;
+      const relativePath = path.relative(workspaceFolder, filePath);
+      changedFiles.push({ localPath: filePath, relativePath, remoteContent: "", status: "added" });
+    }
+
+    panelState.changedFiles = filterIgnoredFiles(changedFiles, loadBase44IgnorePatterns());
+    persistChangedFiles();
+    setIdle(`${message} — ${panelState.changedFiles.length} file(s) out of sync`, "success");
+  }
+
   async function addToBase44Ignore(relativePath: string): Promise<void> {
     const ignoreFile = path.join(workspaceFolder, ".base44ignore");
     let content = "";
@@ -253,7 +356,6 @@ export function activate(context: vscode.ExtensionContext) {
     try {
       if (fs.existsSync(ignoreFile)) {
         content = fs.readFileSync(ignoreFile, "utf-8");
-        // Add newline if file doesn't end with one
         if (content && !content.endsWith("\n")) {
           content += "\n";
         }
@@ -265,11 +367,7 @@ export function activate(context: vscode.ExtensionContext) {
     content += relativePath + "\n";
     fs.writeFileSync(ignoreFile, content, "utf-8");
 
-    // Remove from changed files list
-    const patterns = loadBase44IgnorePatterns();
-    panelState.changedFiles = filterIgnoredFiles(panelState.changedFiles, patterns);
-    persistChangedFiles();
-    postState();
+    await refreshChangedFilesFromSnapshot("Ignore rules updated");
   }
 
   // ---- BOOTSTRAP & VALIDATION ----
@@ -420,16 +518,22 @@ export function activate(context: vscode.ExtensionContext) {
   function startMonitoringFileChanges(token: string) {
     stopMonitoring();
     
-    // Watch for saved file changes in the workspace
+    // Watch for saved file changes and .base44ignore changes in the workspace
     fileWatcher = vscode.workspace.createFileSystemWatcher("**/*", false, false, false);
     
     fileWatcher.onDidChange(async (uri) => {
       const filePath = uri.fsPath;
+      const relativePath = path.relative(workspaceFolder, filePath);
+      
+      // Check if .base44ignore was modified
+      if (path.basename(filePath) === ".base44ignore") {
+        await refreshChangedFilesFromSnapshot("Ignore rules updated");
+        return;
+      }
+
       if (remoteFileSnapshot.hasOwnProperty(filePath)) {
         // This file is in our tracked set, check if it differs from remote
         try {
-          const relativePath = path.relative(workspaceFolder, filePath);
-          
           // Check if file is ignored
           const ignorePatterns = loadBase44IgnorePatterns();
           if (shouldIgnoreFile(relativePath, ignorePatterns)) {
@@ -464,6 +568,65 @@ export function activate(context: vscode.ExtensionContext) {
         } catch {
           // Ignore errors reading files
         }
+      }
+    });
+
+    fileWatcher.onDidCreate(async (uri) => {
+      const filePath = uri.fsPath;
+      const relativePath = path.relative(workspaceFolder, filePath);
+      if (path.basename(filePath) === ".base44ignore") {
+        await refreshChangedFilesFromSnapshot("Ignore rules updated");
+        return;
+      }
+      const ignorePatterns = loadBase44IgnorePatterns();
+      if (shouldIgnoreFile(relativePath, ignorePatterns)) return;
+
+      if (!relativePath || relativePath.startsWith("..") || relativePath.includes(".git") || relativePath.includes("node_modules")) return;
+
+      // If it exists in remote snapshot, check if modified, otherwise it's added
+      if (remoteFileSnapshot.hasOwnProperty(filePath)) {
+        // Handled or check
+      } else {
+        if (!panelState.changedFiles.find(f => f.localPath === filePath)) {
+          panelState.changedFiles.push({
+            localPath: filePath,
+            relativePath,
+            remoteContent: "",
+            status: "added",
+          });
+          persistChangedFiles();
+          postState();
+        }
+      }
+    });
+
+    fileWatcher.onDidDelete(async (uri) => {
+      const filePath = uri.fsPath;
+      const relativePath = path.relative(workspaceFolder, filePath);
+      if (path.basename(filePath) === ".base44ignore") {
+        await refreshChangedFilesFromSnapshot("Ignore rules updated");
+        return;
+      }
+      const ignorePatterns = loadBase44IgnorePatterns();
+      if (shouldIgnoreFile(relativePath, ignorePatterns)) return;
+
+      // If it was in remote snapshot, it's now deleted locally
+      if (remoteFileSnapshot.hasOwnProperty(filePath)) {
+        if (!panelState.changedFiles.find(f => f.localPath === filePath)) {
+          panelState.changedFiles.push({
+            localPath: filePath,
+            relativePath,
+            remoteContent: remoteFileSnapshot[filePath],
+            status: "deleted",
+          });
+          persistChangedFiles();
+          postState();
+        }
+      } else {
+        // Was an added local file that got deleted
+        panelState.changedFiles = panelState.changedFiles.filter(f => f.localPath !== filePath);
+        persistChangedFiles();
+        postState();
       }
     });
 
@@ -659,8 +822,14 @@ export function activate(context: vscode.ExtensionContext) {
       apiPath = `entities/${path.basename(filePath, ".json")}`;
     } else if (path.basename(filePath) === "Layout.js") {
       apiPath = "layout";
-    } else if (path.basename(filePath).endsWith(".js")) {
+    } else if (path.basename(filePath).endsWith(".js") || 
+    path.basename(filePath).endsWith(".css") || 
+    path.basename(filePath).endsWith(".json") ||     
+    path.basename(filePath) === "index.jsx" || 
+    path.basename(filePath) === "App.jsx") {
       apiPath = "src/" + relativePath.replaceAll("\\", "/");
+    } else if (relativePath.startsWith("..\\base44\\entities")) {
+      apiPath = relativePath.replaceAll("\\", "/").replace(/^(\.\.\/)+/, "");
     } else {
       apiPath = relativePath.replace(/\.[^/.]+$/, "").replaceAll("\\", "/");
     }
@@ -732,10 +901,12 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     const changedFile = panelState.changedFiles.find(f => f.localPath === localPath);
-    if (changedFile) {
-      changedFile.isPushing = true;
-      changedFilesProvider?.refresh();
+    if (!changedFile || changedFile.status === "deleted") {
+      return; // Deleted files cannot be pushed
     }
+
+    changedFile.isPushing = true;
+    changedFilesProvider?.refresh();
 
     try {
       const doc = await vscode.workspace.openTextDocument(localPath);
@@ -782,7 +953,25 @@ export function activate(context: vscode.ExtensionContext) {
   // ---- COMMANDS ----
   const openChangedFileDiffCmd = vscode.commands.registerCommand("extension.openChangedFileDiff", async (file: ChangedFile) => {
     if (!file) { return; }
+    if (file.status === "deleted") {
+      // Show remote content directly in a read-only document / preview
+      const scheme = "base44remote";
+      const remoteUri = vscode.Uri.parse(`${scheme}:${file.localPath}`);
+      const disposable = vscode.workspace.registerTextDocumentContentProvider(scheme, {
+        provideTextDocumentContent: () => file.remoteContent,
+      });
+      context.subscriptions.push(disposable);
+      const doc = await vscode.workspace.openTextDocument(remoteUri);
+      await vscode.window.showTextDocument(doc, { preview: true });
+      return;
+    }
     await showDiff(file.localPath, file.remoteContent, file.relativePath);
+  });
+
+  const openAddedFileCmd = vscode.commands.registerCommand("extension.openAddedFile", async (file: ChangedFile) => {
+    if (!file) { return; }
+    const doc = await vscode.workspace.openTextDocument(file.localPath);
+    await vscode.window.showTextDocument(doc, { preview: false });
   });
 
   const pushChangedFileFromTreeCmd = vscode.commands.registerCommand("extension.pushChangedFileFromTree", async (file: ChangedFile) => {
@@ -961,6 +1150,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     openChangedFileDiffCmd,
+    openAddedFileCmd,
     pushChangedFileFromTreeCmd,
     revertChangedFileFromTreeCmd,
     ignoreChangedFileFromTreeCmd,

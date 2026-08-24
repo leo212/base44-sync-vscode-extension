@@ -7,7 +7,7 @@
     "url": "https://github.com/leo212/base44-sync-vscode-extension.git"
   },
   "description": "Sync project files between local project and base44 project",
-  "version": "0.0.9",
+  "version": "0.1.0",
   "engines": {
     "vscode": "^1.103.0"
   },
@@ -125,6 +125,31 @@
           "command": "extension.ignoreChangedFileFromTree",
           "when": "view == base44ChangedFiles && viewItem == base44ChangedFile",
           "group": "inline"
+        },
+        {
+          "command": "extension.openChangedFileDiff",
+          "when": "view == base44ChangedFiles && viewItem == base44DeletedFile",
+          "group": "inline"
+        },
+        {
+          "command": "extension.revertChangedFileFromTree",
+          "when": "view == base44ChangedFiles && viewItem == base44DeletedFile",
+          "group": "inline"
+        },
+        {
+          "command": "extension.ignoreChangedFileFromTree",
+          "when": "view == base44ChangedFiles && viewItem == base44DeletedFile",
+          "group": "inline"
+        },
+        {
+          "command": "extension.pushChangedFileFromTree",
+          "when": "view == base44ChangedFiles && viewItem == base44AddedFile",
+          "group": "inline"
+        },
+        {
+          "command": "extension.ignoreChangedFileFromTree",
+          "when": "view == base44ChangedFiles && viewItem == base44AddedFile",
+          "group": "inline"
         }
       ]
     },
@@ -145,8 +170,9 @@
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
+    "vscode:prepublish": "npm run compile && npm run bundle",
     "compile": "tsc -p ./",
+    "bundle": "esbuild out/extension.js --bundle --platform=node --external:vscode --outfile=out/extension.js --format=cjs --sourcemap --allow-overwrite",
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src",
@@ -161,6 +187,7 @@
     "@vscode/test-cli": "^0.0.11",
     "@vscode/test-electron": "^2.5.2",
     "eslint": "^9.32.0",
+    "esbuild": "^0.25.0",
     "typescript": "^5.9.2"
   },
   "dependencies": {
